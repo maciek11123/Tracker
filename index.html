@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Gesture Tracker — Full Vision</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;900&display=swap');
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#050508;overflow:hidden;font-family:'JetBrains Mono',monospace;user-select:none;touch-action:none;overscroll-behavior:none}
+    
+    video{display:none}
+    #three-canvas,#game-canvas{position:absolute;top:0;left:0;width:100vw;height:100dvh;object-fit:cover;z-index:1}
+    #game-canvas{z-index:2;display:none}
+
+    /* ── HUD ── */
+    #hud{
+        position:absolute;
+        top:max(16px, env(safe-area-inset-top,16px));
+        left:max(16px, env(safe-area-inset-left,16px));
+        z-index:10;display:flex;flex-direction:column;gap:5px;pointer-events:none;
+    }
+    .hud-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .badge{
+        padding:4px 10px;border-radius:6px;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;
+        backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);white-space:nowrap;
+    }
+    .b-status{background:rgba(0,255,120,0.12);color:#00ff78;border:1px solid rgba(0,255,120,0.25)}
+    .b-status.loading{color:#ffaa00;background:rgba(255,170,0,0.12);border-color:rgba(255,170,0,0.25)}
+    .b-status.error{color:#ff4466;background:rgba(255,68,102,0.12);border-color:rgba(255,68,102,0.25)}
+    .b-info{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.5);border:1px solid rgba(255,255,255,0.1)}
+    .b-hands{background:rgba(0,200,255,0.1);color:#00c8ff;border:1px solid rgba(0,200,255,0.2)}
+    .b-gesture{background:rgba(190,120,255,0.12);color:#be78ff;border:1px solid rgba(190,120,255,0.3);font-weight:700;max-width:260px;overflow:hidden;text-overflow:ellipsis}
+
+    /* ── Gesture Toast ── */
+    #gestureToast{
+        position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;
+        pointer-events:none;text-align:center;transition:opacity 0.25s;opacity:0;
+    }
+    #gestureToast.visible{opacity:1}
+    #gestureEmoji{font-size:56px;filter:drop-shadow(0 0 20px rgba(0,0,0,0.7));animation:gPulse .45s ease-out}
+    #gestureName{
+        font-size:22px;letter-spacing:4px;text-transform:uppercase;font-weight:900;
+        color:#fff;text-shadow:0 0 30px rgba(190,120,255,0.8),0 2px 8px rgba(0,0,0,0.9);
+        animation:gSlide .3s ease-out;
+    }
+    #gestureConf{font-size:10px;letter-spacing:2px;color:rgba(255,255,255,0.4);margin-top:3px}
+    @keyframes gPulse{0%{transform:scale(1.5);opacity:0}100%{transform:scale(1);opacity:1}}
+    @keyframes gSlide{0%{transform:translateY(10px);opacity:0}100%{transform:translateY(0);opacity:1}}
+
+    /* ── Per-hand floating labels ── */
+    .hand-label{
+        position:absolute;z-index:15;pointer-events:none;
+        padding:3px 9px;border-radius:5px;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;
+        backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+        transition:left 0.06s linear,top 0.06s linear,opacity 0.2s;white-space:nowrap;
+    }
+    .hand-label.lh{background:rgba(0,200,255,0.15);color:#00c8ff;border:1px solid rgba(0,200,255,0.3)}
+    .hand-label.rh{background:rgba(255,180,50,0.15);color:#ffb432;border:1px solid rgba(255,180,50,0.3)}
+
+    /* ── Gesture Log ── */
+    #gestureLog{
+        position:absolute;top:max(16px, env(safe-area-inset-top,16px));right:max(16px, env(safe-area-inset-right,16px));
+        z-index:12;display:flex;flex-direction:column;gap:2px;max-height:200px;overflow:hidden;pointer-events:none;
+    }
+    .log-entry{
+        padding:2px 7px;border-radius:4px;font-size:9px;letter-spacing:0.8px;
+        background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.35);border:1px solid rgba(255,255,255,0.06);
+        animation:logIn .2s ease-out;white-space:nowrap;text-align:right;
+    }
+    @keyframes logIn{0%{opacity:0;transform:translateX(16px)}100%{opacity:1;transform:translateX(0)}}
+
+    /* ── Top Controls ── */
+    #top-controls{
+        position:absolute;top:max(16px, env(safe-area-inset-top,16px));right:max(16px, env(safe-area-inset-right,16px));
+        z-index:20;display:flex;gap:6px;
+    }
+
+    /* ── Game UI ── */
+    #game-ui{
+        position:absolute;top:max(55px, env(safe-area-inset-top,55px));right:max(24px, env(safe-area-inset-right,24px));
+        z-index:10;display:none;font-size:22px;color:#fff;font-weight:bold;font-family:sans-serif;
+        text-shadow:0 4px 12px rgba(0,0,0,0.8);pointer-events:none;
+    }
+
+    /* ── Bottom UI ── */
+    #ui{
+        position:absolute;bottom:max(12px, env(safe-area-inset-bottom,12px));left:50%;transform:translateX(-50%);
+        display:flex;flex-direction:column;gap:6px;z-index:10;align-items:center;
+        width:100%;max-width:920px;padding:0 8px;
+        transition:opacity .3s ease,transform .3s ease;
+    }
+    .panel{
+        display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:5px;
+        background:rgba(10,10,15,0.8);padding:6px 10px;border-radius:10px;
+        border:1px solid rgba(255,255,255,0.1);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);width:100%;
+    }
+    .btn{
+        padding:7px 12px;border-radius:6px;font-size:10px;letter-spacing:1px;text-transform:uppercase;
+        font-family:inherit;cursor:pointer;border:1px solid rgba(255,255,255,0.1);
+        background:transparent;color:rgba(255,255,255,0.5);transition:all .15s;-webkit-tap-highlight-color:transparent;
+    }
+    .btn:hover,.btn:active{background:rgba(255,255,255,0.05);color:#fff}
+    .btn.active{background:rgba(0,255,120,0.15);color:#00ff78;border-color:rgba(0,255,120,0.4)}
+    .btn-alien{color:#ff4444;border-color:rgba(255,68,68,0.3)}
+    .btn-alien.active{background:rgba(255,68,68,0.15);border-color:rgba(255,68,68,0.6);color:#ff4444}
+    .btn-game{color:#00c8ff;border-color:rgba(0,200,255,0.3)}
+    .btn-game.active{background:rgba(0,200,255,0.15);border-color:rgba(0,200,255,0.6);color:#fff}
+    .divider{width:1px;background:rgba(255,255,255,0.15);margin:0 3px;height:16px}
+    .cam-select{background:rgba(0,0,0,0.5);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:6px;padding:5px 7px;font-family:inherit;font-size:10px;max-width:130px;outline:none;cursor:pointer}
+    .cam-select option{background:#111;color:#fff}
+    .ctrl-group{display:flex;align-items:center;gap:5px;font-size:9px;color:rgba(255,255,255,0.8);text-transform:uppercase}
+    .ctrl-group input[type=range]{width:55px;height:4px;accent-color:#00e5ff;cursor:pointer}
+
+    @media(max-width:600px){
+        .btn{padding:5px 7px;font-size:8px;letter-spacing:.4px}
+        .panel{padding:5px 7px;gap:3px;border-radius:8px}
+        #game-ui{font-size:16px}
+        #hud .badge{font-size:8px;padding:3px 7px}
+        .cam-select{max-width:100px;font-size:8px;padding:3px}
+        .ctrl-group input[type=range]{width:40px}
+        #gestureEmoji{font-size:40px}
+        #gestureName{font-size:16px;letter-spacing:2px}
+    }
+</style>
+</head>
+<body>
+
+<video id="cam" autoplay playsinline muted></video>
+<canvas id="three-canvas"></canvas>
+<canvas id="game-canvas"></canvas>
+
+<!-- Per-hand floating labels -->
+<div class="hand-label lh" id="labelL" style="opacity:0">L: —</div>
+<div class="hand-label rh" id="labelR" style="opacity:0">R: —</div>
+
+<!-- Center toast -->
+<div id="gestureToast">
+    <div id="gestureEmoji"></div>
+    <div id="gestureName"></div>
+    <div id="gestureConf"></div>
+</div>
+
+<!-- HUD -->
+<div id="hud">
+    <div class="hud-row">
+        <div class="badge b-status loading" id="status">Hardware Init…</div>
+        <div class="badge b-info" id="fpsDisplay">-- fps</div>
+    </div>
+    <div class="hud-row">
+        <div class="badge b-hands" id="handStatus">Hands: 0</div>
+        <div class="badge b-gesture" id="gestureHud">Gesture: —</div>
+    </div>
+</div>
+
+<!-- Gesture log -->
+<div id="gestureLog"></div>
+
+<!-- Top controls -->
+<div id="top-controls">
+    <button class="btn" id="btn-ui-toggle" onclick="toggleUI()" style="padding:5px 8px;font-size:13px;background:rgba(0,0,0,0.5)">👁️</button>
+    <button class="btn" onclick="toggleFS()" style="padding:5px 8px;font-size:13px;background:rgba(0,0,0,0.5)">⛶</button>
+</div>
+
+<div id="game-ui">SCORE: <span id="score">0</span></div>
+
+<!-- Bottom UI -->
+<div id="ui">
+    <div class="panel" id="flow-opts" style="display:none;justify-content:space-around;background:rgba(0,229,255,0.1);border-color:rgba(0,229,255,0.3)">
+        <div class="ctrl-group"><span>Rot</span><input type="range" id="s-rot" min="0" max="3" step="0.1" value="1"></div>
+        <div class="ctrl-group"><span>Spd</span><input type="range" id="s-int" min="0" max="3" step="0.1" value="1"></div>
+        <div class="ctrl-group"><span>Rad</span><input type="range" id="s-rad" min="0.2" max="3" step="0.1" value="1"></div>
+        <div class="ctrl-group"><span>Frc</span><input type="range" id="s-frc" min="0" max="3" step="0.1" value="1"></div>
+    </div>
+
+    <div class="panel">
+        <button class="btn mode-btn active" id="btn-pond" onclick="setMode('pond','world')">Pond</button>
+        <button class="btn mode-btn" id="btn-flow" onclick="setMode('flow','world')">Flow</button>
+        <button class="btn mode-btn" id="btn-flow2" onclick="setMode('flow2','world')">Flow v2</button>
+        <button class="btn mode-btn" id="btn-earth" onclick="setMode('earth','world')">Earth</button>
+        <button class="btn mode-btn" id="btn-nebula" onclick="setMode('nebula','world')">Nebula</button>
+        <button class="btn mode-btn" id="btn-storm" onclick="setMode('storm','world')">Storm</button>
+        <button class="btn mode-btn" id="btn-shatter" onclick="setMode('shatter','world')">Shatter</button>
+        <button class="btn mode-btn btn-alien" id="btn-alien" onclick="setMode('alien','world')">Alien</button>
+    </div>
+
+    <div class="panel">
+        <button class="btn mode-btn btn-game" id="btn-bubbles" onclick="setMode('bubbles','game')">🫧 Bubbles</button>
+        <button class="btn mode-btn btn-game" id="btn-fruits" onclick="setMode('fruits','game')">🍉 Fruits</button>
+        <div class="divider"></div>
+        <button class="btn res" onclick="setRes('low')" id="res-low">Low</button>
+        <button class="btn res active" onclick="setRes('med')" id="res-med">Med</button>
+        <button class="btn res" onclick="setRes('high')" id="res-high">High</button>
+    </div>
+
+    <div class="panel" style="background:rgba(0,200,255,0.15);border-color:rgba(0,200,255,0.5)">
+        <select id="cam-select" class="cam-select"></select>
+        <button class="btn" onclick="toggleCamRotation()" title="Rotate Webcam 90°" style="background:transparent;border:none;padding:2px;margin:0 3px">
+            <svg id="phone-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transition:transform .3s cubic-bezier(.4,0,.2,1);filter:drop-shadow(0 2px 3px rgba(0,0,0,.8))">
+                <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><circle cx="12" cy="18" r="1"/><circle cx="12" cy="6" r="1.5" fill="#fff"/>
+            </svg>
+        </button>
+        <span id="cam-deg" style="font-size:12px;color:#00ff78;font-weight:900;width:24px;text-align:right;margin-right:3px">0°</span>
+        <div class="divider" style="height:22px;background:rgba(0,200,255,0.3)"></div>
+        <button class="btn active" id="btn-mirror" onclick="toggleMirror()" title="Flip X" style="padding:5px;border-radius:6px">🪞 Flip X</button>
+    </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+//  REFS
+// ═══════════════════════════════════════════
+const videoElement  = document.getElementById('cam');
+const threeCanvas   = document.getElementById('three-canvas');
+const gameCanvas    = document.getElementById('game-canvas');
+const gCtx          = gameCanvas.getContext('2d');
+const statusEl      = document.getElementById('status');
+const fpsEl         = document.getElementById('fpsDisplay');
+const gestureHudEl  = document.getElementById('gestureHud');
+const handStatusEl  = document.getElementById('handStatus');
+const scoreEl       = document.getElementById('score');
+const camSelect     = document.getElementById('cam-select');
+
+let W = window.innerWidth, H = window.innerHeight;
+gameCanvas.width = W; gameCanvas.height = H;
+
+// ═══════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════
+let lastFrameTime = performance.now(), frameCount = 0, time = 0;
+let currentMode = 'pond', currentCategory = 'world', currentRes = 'med';
+let resMult = 1.0, gameScore = 0;
+let camRotation = 0, mirrorX = true;
+let uiVisible = true;
+
+// Gesture tracking
+let gesture = { count:0, fist:false, zoom:1.0, angle:0, midX:0.5, midY:0.5, h1:null, h2:null, label:{} };
+let s_scale=1,s_rotZ=0,s_rotX=0,s_rotY=0,s_fist=0;
+
+// Per-hand gesture classification state
+let lastGesture = { left:null, right:null };
+let gestureHoldTime = { left:0, right:0 };
+let toastTimer = null;
+const GESTURE_HOLD_MS = 300;
+const LOG_MAX = 14;
+
+const processCanvas = document.createElement('canvas');
+const processCtx = processCanvas.getContext('2d',{willReadFrequently:true});
+
+// ═══════════════════════════════════════════
+//  GESTURE DEFINITIONS & CLASSIFICATION
+// ═══════════════════════════════════════════
+const GESTURE_META = {
+    'Open Palm':   {emoji:'🖐️', color:'#00ff78'},
+    'Fist':        {emoji:'✊',  color:'#ff6b6b'},
+    'Pointing':    {emoji:'👆',  color:'#00c8ff'},
+    'Peace':       {emoji:'✌️', color:'#be78ff'},
+    'Thumbs Up':   {emoji:'👍',  color:'#ffb432'},
+    'Thumbs Down': {emoji:'👎',  color:'#ff4466'},
+    'OK Sign':     {emoji:'👌',  color:'#50fa7b'},
+    'Rock On':     {emoji:'🤘',  color:'#ff79c6'},
+    'Shaka':       {emoji:'🤙',  color:'#8be9fd'},
+    'Pinch':       {emoji:'🤏',  color:'#f1fa8c'},
+    'Three':       {emoji:'3️⃣',  color:'#ffaa00'},
+    'Four':        {emoji:'4️⃣',  color:'#bd93f9'},
+    'Finger Gun':  {emoji:'🔫',  color:'#ff5555'},
+    'None':        {emoji:'',    color:'#666'},
+};
+
+function dist3(a,b){return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2+((a.z||0)-(b.z||0))**2)}
+
+function isFingerExtended(lm,finger){
+    const map={thumb:[1,2,3,4],index:[5,6,7,8],middle:[9,10,11,12],ring:[13,14,15,16],pinky:[17,18,19,20]};
+    const[mcp,pip,dip,tip]=map[finger].map(i=>lm[i]);
+    const wrist=lm[0];
+    if(finger==='thumb'){return dist3(tip,wrist)>dist3(pip,wrist)*1.1}
+    return dist3(tip,mcp)>dist3(pip,mcp)*1.4;
+}
+
+function thumbDirection(lm){
+    const tip=lm[4],mcp=lm[2];
+    const dy=tip.y-mcp.y,dx=Math.abs(tip.x-mcp.x);
+    if(Math.abs(dy)>dx)return dy<-0.04?'up':'down';
+    return 'side';
+}
+
+function classifyGesture(landmarks){
+    const lm=landmarks;
+    const thumb=isFingerExtended(lm,'thumb');
+    const index=isFingerExtended(lm,'index');
+    const middle=isFingerExtended(lm,'middle');
+    const ring=isFingerExtended(lm,'ring');
+    const pinky=isFingerExtended(lm,'pinky');
+    const count=[thumb,index,middle,ring,pinky].filter(Boolean).length;
+
+    const pinchDist=dist3(lm[4],lm[8]);
+    if(pinchDist<0.055&&!middle&&!ring&&!pinky) return 'Pinch';
+    if(pinchDist<0.06&&middle&&ring) return 'OK Sign';
+    if(count===0) return 'Fist';
+    if(thumb&&!index&&!middle&&!ring&&!pinky){
+        const dir=thumbDirection(lm);
+        if(dir==='up') return 'Thumbs Up';
+        if(dir==='down') return 'Thumbs Down';
+        return 'Fist';
+    }
+    if(!thumb&&index&&!middle&&!ring&&!pinky) return 'Pointing';
+    if(!thumb&&index&&middle&&!ring&&!pinky) return 'Peace';
+    if(!thumb&&index&&!middle&&!ring&&pinky) return 'Rock On';
+    if(thumb&&index&&!middle&&!ring&&!pinky) return 'Finger Gun';
+    if(thumb&&!index&&!middle&&!ring&&pinky) return 'Shaka';
+    if(!thumb&&index&&middle&&ring&&!pinky) return 'Three';
+    if(!thumb&&index&&middle&&ring&&pinky) return 'Four';
+    if(count>=5) return 'Open Palm';
+    return 'None';
+}
+
+// ═══════════════════════════════════════════
+//  GESTURE UI FEEDBACK
+// ═══════════════════════════════════════════
+function showGestureToast(name){
+    const meta=GESTURE_META[name]||GESTURE_META.None;
+    if(!meta.emoji) return;
+    const toast=document.getElementById('gestureToast');
+    document.getElementById('gestureEmoji').textContent=meta.emoji;
+    const nameEl=document.getElementById('gestureName');
+    nameEl.textContent=name; nameEl.style.color=meta.color;
+    document.getElementById('gestureConf').textContent='DETECTED';
+    toast.classList.add('visible');
+    nameEl.style.animation='none';nameEl.offsetHeight;nameEl.style.animation='';
+    const emojiEl=document.getElementById('gestureEmoji');
+    emojiEl.style.animation='none';emojiEl.offsetHeight;emojiEl.style.animation='';
+    clearTimeout(toastTimer);
+    toastTimer=setTimeout(()=>toast.classList.remove('visible'),1000);
+}
+
+function addLogEntry(hand,name){
+    const log=document.getElementById('gestureLog');
+    const meta=GESTURE_META[name]||{};
+    const entry=document.createElement('div');
+    entry.className='log-entry';
+    entry.innerHTML=`<span style="color:${meta.color||'#fff'}">${meta.emoji||''} ${name}</span> <span style="opacity:.35">· ${hand}</span>`;
+    log.prepend(entry);
+    while(log.children.length>LOG_MAX) log.removeChild(log.lastChild);
+}
+
+function updateFloatingLabel(handedness,gestureName,wristLm){
+    const isLeft=handedness==='Left';
+    const el=document.getElementById(isLeft?'labelL':'labelR');
+    const meta=GESTURE_META[gestureName]||{};
+    const x=mirrorX?(1-wristLm.x)*W:wristLm.x*W;
+    const y=wristLm.y*H-45;
+    el.style.left=Math.max(0,Math.min(W-150,x-55))+'px';
+    el.style.top=Math.max(0,y)+'px';
+    el.style.opacity=gestureName==='None'?'0.25':'1';
+    el.textContent=`${isLeft?'L':'R'}: ${meta.emoji||''} ${gestureName}`;
+}
+
+function processGestureHold(handedness,gestureName){
+    const key=handedness.toLowerCase();
+    if(gestureName!=='None'){
+        if(lastGesture[key]===gestureName){
+            gestureHoldTime[key]+=33;
+            if(gestureHoldTime[key]>=GESTURE_HOLD_MS&&gestureHoldTime[key]<GESTURE_HOLD_MS+50){
+                showGestureToast(gestureName);
+                addLogEntry(handedness,gestureName);
+            }
+        }else{lastGesture[key]=gestureName;gestureHoldTime[key]=0}
+    }else{lastGesture[key]=null;gestureHoldTime[key]=0}
+}
+
+// ═══════════════════════════════════════════
+//  UI TOGGLES
+// ═══════════════════════════════════════════
+window.toggleUI=function(){
+    uiVisible=!uiVisible;
+    const uiEl=document.getElementById('ui'),hudEl=document.getElementById('hud');
+    if(uiVisible){uiEl.style.opacity='1';uiEl.style.transform='translateX(-50%) translateY(0)';hudEl.style.opacity='1';document.getElementById('btn-ui-toggle').style.color='#fff';setTimeout(()=>{uiEl.style.pointerEvents='auto'},50)}
+    else{uiEl.style.opacity='0';uiEl.style.transform='translateX(-50%) translateY(20px)';hudEl.style.opacity='0';document.getElementById('btn-ui-toggle').style.color='rgba(255,255,255,0.3)';uiEl.style.pointerEvents='none'}
+};
+window.toggleFS=function(){
+    if(!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>{});
+    else if(document.exitFullscreen)document.exitFullscreen();
+};
+window.toggleCamRotation=function(){
+    camRotation=(camRotation+90)%360;
+    document.getElementById('phone-icon').style.transform=`rotate(${camRotation}deg)`;
+    document.getElementById('cam-deg').innerText=`${camRotation}°`;
+};
+window.toggleMirror=function(){
+    mirrorX=!mirrorX;
+    const btn=document.getElementById('btn-mirror');
+    btn.classList.toggle('active',mirrorX);
+    btn.style.color=mirrorX?'#00ff78':'rgba(255,255,255,0.5)';
+};
+
+// ═══════════════════════════════════════════
+//  HELPER MATH (from original)
+// ═══════════════════════════════════════════
+function hsl(h,s,l){h=((h%1)+1)%1;var a=s*Math.min(l,1-l);function f(n){var k=(n+h*12)%12;return l-a*Math.max(-1,Math.min(k-3,9-k,1))}return[f(0),f(8),f(4)]}
+function n3(x,y,z){var X=Math.floor(x),Y=Math.floor(y),Z=Math.floor(z),fx=x-X,fy=y-Y,fz=z-Z;function h(a,b,c){var v=(a*374761393+b*668265263+c*1274126177)^(a>>>13);v=(v^(v>>>16))*0x45d9f3b;return((v^(v>>>16))&0xfff)/0xfff-.5}function L(a,b,t){return a+(b-a)*t*t*(3-2*t)}return L(L(L(h(X,Y,Z),h(X+1,Y,Z),fx),L(h(X,Y+1,Z),h(X+1,Y+1,Z),fx),fy),L(L(h(X,Y,Z+1),h(X+1,Y,Z+1),fx),L(h(X,Y+1,Z+1),h(X+1,Y+1,Z+1),fx),fy),fz)}
+
+// ═══════════════════════════════════════════
+//  THREE.JS CORE
+// ═══════════════════════════════════════════
+const scene=new THREE.Scene();
+const worldGroup=new THREE.Group();scene.add(worldGroup);
+const fadeScene=new THREE.Scene();
+const orthoCamera=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+const fadeMat=new THREE.MeshBasicMaterial({color:0x030303,transparent:true,opacity:0.1,depthWrite:false});
+fadeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),fadeMat));
+
+const camera=new THREE.PerspectiveCamera(75,W/H,0.1,2000);
+const renderer=new THREE.WebGLRenderer({canvas:threeCanvas,alpha:true,antialias:false});
+renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2.5));
+
+let orbit={theta:0,phi:Math.PI/3,radius:16},orbitTarget=new THREE.Vector3(0,0,0);
+function syncOrbit(){var d=camera.position.clone().sub(orbitTarget);orbit.radius=d.length();orbit.phi=Math.acos(Math.max(-1,Math.min(1,d.y/orbit.radius)));orbit.theta=Math.atan2(d.x,d.z)}
+var rayP=new THREE.Plane(new THREE.Vector3(0,1,0),0),rc=new THREE.Raycaster(),ip=new THREE.Vector3();
+function s2w(cx,cy){rc.setFromCamera({x:(cx/W)*2-1,y:-(cy/H)*2+1},camera);if(rc.ray.intersectPlane(rayP,ip))return{x:ip.x,z:ip.z,hit:true};return{x:0,z:0,hit:false}}
+
+let activeWorld=null;
+
+// ═══════════════════════════════════════════
+//  GLSL SHADERS
+// ═══════════════════════════════════════════
+const GLSL_NOISE=`
+vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x,289.0);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+float snoise(vec3 v){
+  const vec2 C=vec2(1.0/6.0,1.0/3.0);const vec4 D=vec4(0,0.5,1,2);
+  vec3 i=floor(v+dot(v,C.yyy));vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz);vec3 l=1.0-g;vec3 i1=min(g.xyz,l.zxy);vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx;vec3 x2=x0-i2+2.0*C.xxx;vec3 x3=x0-1.0+3.0*C.xxx;
+  i=mod(i,289.0);
+  vec4 p=permute(permute(permute(i.z+vec4(0,i1.z,i2.z,1))+i.y+vec4(0,i1.y,i2.y,1))+i.x+vec4(0,i1.x,i2.x,1));
+  float n_=1.0/7.0;vec3 ns=n_*D.wyz-D.xzx;
+  vec4 j=p-49.0*floor(p*ns.z*ns.z);vec4 x_=floor(j*ns.z);vec4 y_=floor(j-7.0*x_);
+  vec4 x=x_*ns.x+ns.yyyy;vec4 y=y_*ns.x+ns.yyyy;vec4 h=1.0-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy);vec4 b1=vec4(x.zw,y.zw);
+  vec4 s0=floor(b0)*2.0+1.0;vec4 s1=floor(b1)*2.0+1.0;vec4 sh=-step(h,vec4(0));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x);vec3 p1=vec3(a0.zw,h.y);vec3 p2=vec3(a1.xy,h.z);vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;
+  vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0);m=m*m;
+  return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+}`;
+
+const GLSL_CURL=GLSL_NOISE+`
+vec3 snoise3(vec3 x){return vec3(snoise(x),snoise(vec3(x.y-19.1,x.z+33.4,x.x+47.2)),snoise(vec3(x.z+74.2,x.x-124.5,x.y+99.4)));}
+vec3 curlNoise(vec3 p){
+  const float e=0.1;vec3 dx=vec3(e,0,0),dy=vec3(0,e,0),dz=vec3(0,0,e);
+  vec3 px0=snoise3(p-dx),px1=snoise3(p+dx);vec3 py0=snoise3(p-dy),py1=snoise3(p+dy);vec3 pz0=snoise3(p-dz),pz1=snoise3(p+dz);
+  return normalize(vec3(py1.z-py0.z-pz1.y+pz0.y,pz1.x-pz0.x-px1.z+px0.z,px1.y-px0.y-py1.x+py0.x)*(1.0/(2.0*e)));
+}`;
+
+// ═══════════════════════════════════════════
+//  WORLDS (all 8 modes from original)
+// ═══════════════════════════════════════════
+function buildLifeform(isHeavy){
+    const radius=isHeavy?170:160;const IcoDetail=currentRes==='low'?3:(currentRes==='high'?5:4);
+    const baseGeo=new THREE.IcosahedronGeometry(radius,IcoDetail);const baseVerts=baseGeo.attributes.position.array;const count=baseVerts.length/3;
+    const geo=new THREE.BufferGeometry();const ps=new Float32Array(baseVerts.length),ops=new Float32Array(baseVerts.length),vs=new Float32Array(baseVerts.length),ro=new Float32Array(baseVerts.length);
+    for(let i=0;i<count;i++){let ix=i*3,iy=i*3+1,iz=i*3+2;let vec=new THREE.Vector3(baseVerts[ix],baseVerts[iy],baseVerts[iz]).normalize();let d=1+(Math.random()*(isHeavy?1.4:1.2)-(isHeavy?.7:.6));ps[ix]=ops[ix]=vec.x*radius*d;ps[iy]=ops[iy]=vec.y*radius*d;ps[iz]=ops[iz]=vec.z*radius*d;vs[ix]=vs[iy]=vs[iz]=0;ro[ix]=Math.random()*Math.PI*2;ro[iy]=Math.random()*Math.PI*2;ro[iz]=Math.random()*Math.PI*2}
+    geo.setAttribute('position',new THREE.BufferAttribute(ps,3));geo.setIndex(baseGeo.index);
+    const pMat=new THREE.PointsMaterial({color:0xdddddd,size:isHeavy?2:1.2,transparent:true,opacity:isHeavy?.95:.7});
+    const lMat=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:isHeavy?.35:.12});
+    const pts=new THREE.Points(geo,pMat);const lns=new THREE.LineSegments(geo,lMat);const grp=new THREE.Group();grp.add(pts);grp.add(lns);worldGroup.add(grp);
+    const cfg=isHeavy?{iSpr:.008,aSpr:.003,fric:.92,ampI:10,spdI:.1,ampA:60,spdA:.6}:{iSpr:.02,aSpr:.008,fric:.85,ampI:4,spdI:.3,ampA:40,spdA:3};
+    return{m:[grp],dc(){camera.position.set(0,0,450);camera.lookAt(0,0,0)},bg:[.03,.03,.03],
+    up(dt){const isAg=gesture.count===2||s_fist>.1;const curSpr=isAg?cfg.aSpr:cfg.iSpr;const wAmp=isAg?cfg.ampA:cfg.ampI;const wSpd=isAg?cfg.spdA:cfg.spdI;
+    for(let i=0;i<count;i++){let ix=i*3,iy=i*3+1,iz=i*3+2;let comp=1-s_fist*.9;let tx=ops[ix]*comp+Math.sin(time*wSpd+ro[ix])*wAmp;let ty=ops[iy]*comp+Math.cos(time*wSpd+ro[iy])*wAmp;let tz=ops[iz]*comp+Math.sin(time*wSpd+ro[iz])*wAmp;
+    vs[ix]+=(tx-ps[ix])*curSpr;vs[iy]+=(ty-ps[iy])*curSpr;vs[iz]+=(tz-ps[iz])*curSpr;
+    if(isAg&&!isHeavy){vs[ix]+=(Math.random()-.5)*3;vs[iy]+=(Math.random()-.5)*3;vs[iz]+=(Math.random()-.5)*3}
+    else if(isAg&&isHeavy){vs[ix]+=Math.sin(time*1.5+ro[ix])*.6;vs[iy]+=Math.cos(time*2+ro[iy])*.6;vs[iz]+=Math.sin(time+ro[iz])*.6}
+    vs[ix]*=cfg.fric;vs[iy]*=cfg.fric;vs[iz]*=cfg.fric;ps[ix]+=vs[ix];ps[iy]+=vs[iy];ps[iz]+=vs[iz]}
+    pts.geometry.attributes.position.needsUpdate=true},pm(){}}
+}
+
+const Worlds={
+    alien(){return buildLifeform(false)},
+    heavy(){return buildLifeform(true)},
+
+    earth(){
+        const earthGrp=new THREE.Group();const texLoader=new THREE.TextureLoader();
+        const geo=new THREE.SphereGeometry(18,64,64);
+        const mat=new THREE.MeshStandardMaterial({map:texLoader.load('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg'),roughness:.6,metalness:.2});
+        earthGrp.add(new THREE.Mesh(geo,mat));
+        const atmoMat=new THREE.MeshBasicMaterial({color:0x00c8ff,transparent:true,opacity:.15,blending:THREE.AdditiveBlending,side:THREE.BackSide});
+        earthGrp.add(new THREE.Mesh(new THREE.SphereGeometry(18.5,64,64),atmoMat));
+        const light=new THREE.DirectionalLight(0xffffff,2);light.position.set(50,30,20);earthGrp.add(light);earthGrp.add(new THREE.AmbientLight(0x222222));
+        worldGroup.add(earthGrp);
+        return{m:[earthGrp],dc(){camera.position.set(0,0,45);camera.lookAt(0,0,0);orbitTarget.set(0,0,0);syncOrbit()},bg:[.005,.005,.01],
+        up(dt){if(gesture.count>0&&gesture.fist&&gesture.h1){earthGrp.rotation.y+=(gesture.h1.x-.5)*.15;earthGrp.rotation.x+=(gesture.h1.y-.5)*.15}else{earthGrp.rotation.y+=dt*.3}},pm(){}}
+    },
+
+    flow(){
+        var N=Math.floor(100000*resMult),R=15;var geo=new THREE.BufferGeometry();var pos=new Float32Array(N*3),offsets=new Float32Array(N);
+        for(let i=0;i<N;i++){var u=Math.random(),v=Math.random(),theta=u*2*Math.PI,phi=Math.acos(2*v-1);pos[i*3]=R*Math.sin(phi)*Math.cos(theta);pos[i*3+1]=R*Math.sin(phi)*Math.sin(theta);pos[i*3+2]=R*Math.cos(phi);offsets[i]=Math.random()}
+        geo.setAttribute('position',new THREE.BufferAttribute(pos,3));geo.setAttribute('aOffset',new THREE.BufferAttribute(offsets,1));
+        var material=new THREE.ShaderMaterial({uniforms:{uTime:{value:0},uMousePos:{value:new THREE.Vector3()},uMouseActive:{value:0},uRepelRadius:{value:6},uFlowSpeed:{value:.15},uRepelForce:{value:1.5}},
+        vertexShader:GLSL_CURL+`uniform float uTime;uniform vec3 uMousePos;uniform float uMouseActive;uniform float uRepelRadius;uniform float uFlowSpeed;uniform float uRepelForce;attribute float aOffset;varying float vAlpha;varying float vAge;
+        void main(){float age=fract(uTime*uFlowSpeed+aOffset);vAlpha=smoothstep(0.0,0.1,age)*smoothstep(1.0,0.8,age);vAge=age;vec3 p=position;float totalDist=age*25.0;float stepSize=1.25;
+        for(int i=0;i<20;i++){if(totalDist>0.0){float curStep=min(totalDist,stepSize);vec3 flow=curlNoise(p*0.08);vec3 cp=normalize(p);vec3 rot=cross(cp,vec3(0,1,0));flow=normalize(mix(flow,rot,0.3));
+        if(uMouseActive>0.5){float dm=distance(p,uMousePos);if(dm<uRepelRadius){vec3 repel=normalize(p-uMousePos);float force=smoothstep(uRepelRadius,0.0,dm);flow=normalize(mix(flow,repel,force*uRepelForce));}}
+        p+=flow*curStep;totalDist-=curStep;}}vec4 mv=modelViewMatrix*vec4(p,1);gl_Position=projectionMatrix*mv;gl_PointSize=max(1.5,18.0/-mv.z);}`,
+        fragmentShader:`varying float vAlpha;varying float vAge;void main(){vec2 c=gl_PointCoord-vec2(0.5);float d=length(c);if(d>0.5)discard;float soft=smoothstep(0.5,0.1,d);
+        vec3 c1=vec3(0,0.5,1);vec3 c2=vec3(0.7,0.1,1);vec3 c3=vec3(1,0.85,0.1);vec3 color=mix(c1,c2,smoothstep(0.0,0.5,vAge));color=mix(color,c3,smoothstep(0.5,1.0,vAge));
+        gl_FragColor=vec4(color,soft*vAlpha*1.8);}`,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+        var pts=new THREE.Points(geo,material);worldGroup.add(pts);var activePos=new THREE.Vector3(),isActive=0;
+        return{m:[pts],dc(){camera.position.set(0,35,25);camera.lookAt(0,0,0);orbitTarget.set(0,0,0);syncOrbit()},bg:[.015,.015,.02],
+        up(dt){material.uniforms.uTime.value=time;var rMul=parseFloat(document.getElementById('s-rad')?.value||1),fMul=parseFloat(document.getElementById('s-frc')?.value||1),sMul=parseFloat(document.getElementById('s-int')?.value||1),rotMul=parseFloat(document.getElementById('s-rot')?.value||1);
+        material.uniforms.uRepelRadius.value=6*rMul;material.uniforms.uRepelForce.value=1.5*fMul;material.uniforms.uFlowSpeed.value=.15*sMul;
+        worldGroup.rotation.y+=.003*rotMul;worldGroup.rotation.x+=.0015*rotMul;worldGroup.rotation.z+=.0005*rotMul;
+        material.uniforms.uMouseActive.value+=(isActive-material.uniforms.uMouseActive.value)*.2;material.uniforms.uMousePos.value.lerp(activePos,.2);isActive=0},
+        pm(wx,wz){activePos.set(wx,0,wz);isActive=1}}
+    },
+
+    flow2(){
+        var N=Math.floor(100000*resMult),R=15;var geo=new THREE.BufferGeometry();var pos=new Float32Array(N*3),offsets=new Float32Array(N),cubePos=new Float32Array(N*3);
+        for(let i=0;i<N;i++){var u=Math.random(),v=Math.random(),theta=u*2*Math.PI,phi=Math.acos(2*v-1);pos[i*3]=R*Math.sin(phi)*Math.cos(theta);pos[i*3+1]=R*Math.sin(phi)*Math.sin(theta);pos[i*3+2]=R*Math.cos(phi);offsets[i]=Math.random();cubePos[i*3]=(Math.random()-.5)*20;cubePos[i*3+1]=(Math.random()-.5)*20;cubePos[i*3+2]=(Math.random()-.5)*20}
+        geo.setAttribute('position',new THREE.BufferAttribute(pos,3));geo.setAttribute('aOffset',new THREE.BufferAttribute(offsets,1));geo.setAttribute('aCubePos',new THREE.BufferAttribute(cubePos,3));
+        var material=new THREE.ShaderMaterial({uniforms:{uTime:{value:0},uMousePos:{value:new THREE.Vector3()},uMouseActive:{value:0},uRepelRadius:{value:6},uFlowSpeed:{value:.15},uRepelForce:{value:1.5},uContract:{value:0}},
+        vertexShader:GLSL_CURL+`uniform float uTime;uniform vec3 uMousePos;uniform float uMouseActive;uniform float uRepelRadius;uniform float uFlowSpeed;uniform float uRepelForce;uniform float uContract;attribute float aOffset;attribute vec3 aCubePos;varying float vAlpha;varying float vAge;
+        void main(){float age=fract(uTime*uFlowSpeed+aOffset);vAlpha=smoothstep(0.0,0.1,age)*smoothstep(1.0,0.8,age);vAge=age;vec3 p=position;float totalDist=age*25.0;float stepSize=1.25;
+        for(int i=0;i<20;i++){if(totalDist>0.0){float curStep=min(totalDist,stepSize);vec3 flow=curlNoise(p*0.08);vec3 cp=normalize(p);vec3 rot=cross(cp,vec3(0,1,0));flow=normalize(mix(flow,rot,0.3));
+        if(uMouseActive>0.5){float dm=distance(p,uMousePos);if(dm<uRepelRadius){vec3 repel=normalize(p-uMousePos);float force=smoothstep(uRepelRadius,0.0,dm);flow=normalize(mix(flow,repel,force*uRepelForce));}}
+        p+=flow*curStep;totalDist-=curStep;}}p=mix(p,aCubePos,uContract);vec4 mv=modelViewMatrix*vec4(p,1);gl_Position=projectionMatrix*mv;gl_PointSize=max(1.5,18.0/-mv.z);}`,
+        fragmentShader:`varying float vAlpha;varying float vAge;void main(){vec2 c=gl_PointCoord-vec2(0.5);float d=length(c);if(d>0.5)discard;float soft=smoothstep(0.5,0.1,d);
+        vec3 c1=vec3(0.6,0,1);vec3 c2=vec3(0.1,0.6,1);vec3 c3=vec3(1,0.9,0.2);vec3 color=mix(c1,c2,smoothstep(0.0,0.5,vAge));color=mix(color,c3,smoothstep(0.5,1.0,vAge));
+        gl_FragColor=vec4(color,soft*vAlpha*2.0);}`,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+        var pts=new THREE.Points(geo,material);worldGroup.add(pts);var activePos=new THREE.Vector3(),isActive=0,cubeBlend=0;
+        return{m:[pts],dc(){camera.position.set(0,35,25);camera.lookAt(0,0,0);orbitTarget.set(0,0,0);syncOrbit()},bg:[.015,.015,.02],
+        up(dt){material.uniforms.uTime.value=time;var rMul=parseFloat(document.getElementById('s-rad')?.value||1),fMul=parseFloat(document.getElementById('s-frc')?.value||1),sMul=parseFloat(document.getElementById('s-int')?.value||1),rotMul=parseFloat(document.getElementById('s-rot')?.value||1);
+        material.uniforms.uRepelRadius.value=6*rMul;material.uniforms.uRepelForce.value=1.5*fMul;material.uniforms.uFlowSpeed.value=.15*sMul;
+        worldGroup.rotation.y+=.003*rotMul;worldGroup.rotation.x+=.0015*rotMul;worldGroup.rotation.z+=.0005*rotMul;
+        material.uniforms.uMouseActive.value+=(isActive-material.uniforms.uMouseActive.value)*.2;material.uniforms.uMousePos.value.lerp(activePos,.2);isActive=0;
+        let handsClose=(gesture.count===2&&gesture.zoom<.25);cubeBlend+=(handsClose?1:0-cubeBlend)*.08;material.uniforms.uContract.value=cubeBlend},
+        pm(wx,wz){activePos.set(wx,0,wz);isActive=1}}
+    },
+
+    pond(){
+        var G=Math.floor(220*Math.sqrt(resMult)),SZ=55,geo=new THREE.PlaneGeometry(SZ,SZ,G,G);geo.rotateX(-Math.PI/2);
+        var pos=geo.attributes.position,N=pos.count,C=G+1,cur=new Float32Array(N),vel=new Float32Array(N),edg=new Float32Array(N),B=Math.floor(G*.08);
+        for(var r=0;r<C;r++)for(var c=0;c<C;c++){var i=r*C+c;edg[i]=Math.min(1,Math.min(Math.min(c,G-c)/B,Math.min(r,G-r)/B))}
+        var cols=new Float32Array(N*3);geo.setAttribute('color',new THREE.BufferAttribute(cols,3));
+        var pts=new THREE.Points(geo,new THREE.PointsMaterial({vertexColors:true,size:.07,sizeAttenuation:true}));worldGroup.add(pts);
+        function disturbance(wx,wz,str){var rd=1.5*Math.max(.3,str);for(var i=0;i<N;i++){var dx=pos.getX(i)-wx,dz=pos.getZ(i)-wz,d2=dx*dx+dz*dz;if(d2<rd*rd)cur[i]-=str*Math.cos(Math.sqrt(d2)/rd*Math.PI*.5)*1.8}}
+        var hO=0;
+        return{m:[pts],dc(){camera.position.set(0,14,1);camera.lookAt(0,0,-3);orbitTarget.set(0,0,-4);syncOrbit()},bg:[0,0,.03],
+        up(dt){hO=(hO+dt/40)%1;for(var r=1;r<C-1;r++)for(var c=1;c<C-1;c++){var i=r*C+c,lp=cur[(r-1)*C+c]+cur[(r+1)*C+c]+cur[r*C+(c-1)]+cur[r*C+(c+1)]-4*cur[i];vel[i]=(vel[i]+.34*lp)*(.986-(1-edg[i])*.15)}
+        for(var i=0;i<N;i++)cur[i]=(cur[i]+vel[i])*edg[i];var cl=geo.attributes.color,bH=.55+Math.sin(hO*Math.PI*2)*.2;
+        for(var i=0;i<N;i++){var h=cur[i];cur[i]*=(1-.2*s_fist);var fh=bH+h*.05,rgb=hsl(fh,.8+Math.min(.2,Math.abs(h)*.12),Math.max(.04,Math.min(.65,.14+Math.abs(h)*.25)));cl.setXYZ(i,rgb[0],rgb[1],rgb[2]);pos.setY(i,h*.6)}cl.needsUpdate=true;pos.needsUpdate=true},
+        pm(wx,wz,str){disturbance(wx,wz,str*.5)}}
+    },
+
+    nebula(){
+        var CT=Math.floor(50000*resMult),geo=new THREE.BufferGeometry(),ps=new Float32Array(CT*3),cs=new Float32Array(CT*3),bp=new Float32Array(CT*3),vs=new Float32Array(CT*3);
+        for(var i=0;i<CT;i++){var th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1),rr=Math.pow(Math.random(),.5)*18,x=rr*Math.sin(ph)*Math.cos(th),y=rr*Math.cos(ph)*.3,z=rr*Math.sin(ph)*Math.sin(th);ps[i*3]=x;ps[i*3+1]=y;ps[i*3+2]=z;bp[i*3]=x;bp[i*3+1]=y;bp[i*3+2]=z}
+        geo.setAttribute('position',new THREE.BufferAttribute(ps,3));geo.setAttribute('color',new THREE.BufferAttribute(cs,3));
+        var pts=new THREE.Points(geo,new THREE.PointsMaterial({vertexColors:true,size:.06,transparent:true,opacity:.7}));worldGroup.add(pts);var att=[],hO=0;
+        return{m:[pts],dc(){camera.position.set(0,8,25);camera.lookAt(0,0,0);orbitTarget.set(0,0,0);syncOrbit()},bg:[.02,0,.04],
+        up(dt){hO=(hO+dt/50)%1;var t=time*.15,pos=geo.attributes.position,col=geo.attributes.color;
+        for(var i=0;i<CT;i++){var x=ps[i*3],y=ps[i*3+1],z=ps[i*3+2],sc=.08;
+        let cx=bp[i*3]*(1-s_fist),cy=bp[i*3+1]*(1-s_fist),cz=bp[i*3+2]*(1-s_fist);
+        vs[i*3]+=(n3(x*sc+t,y*sc,z*sc)*.6+(cx-x)*.008)*dt;vs[i*3+1]+=(n3(x*sc,y*sc+t,z*sc)*.2+(cy-y)*.012)*dt;vs[i*3+2]+=(n3(x*sc,y*sc,z*sc+t)*.6+(cz-z)*.008)*dt;
+        for(var j=0;j<att.length;j++){var a=att[j],dx=a.x-x,dy=a.y-y,dz=a.z-z,d=Math.sqrt(dx*dx+dy*dy+dz*dz)+.5,f=a.s/(d*d)*dt*8;vs[i*3]+=dx/d*f;vs[i*3+1]+=dy/d*f;vs[i*3+2]+=dz/d*f}
+        vs[i*3]*=.96;vs[i*3+1]*=.96;vs[i*3+2]*=.96;x+=vs[i*3];y+=vs[i*3+1];z+=vs[i*3+2];ps[i*3]=x;ps[i*3+1]=y;ps[i*3+2]=z;
+        var rgb=hsl(.75+hO+Math.sqrt(x*x+y*y+z*z)*.01,.7,Math.min(.6,.08+Math.sqrt(vs[i*3]*vs[i*3]+vs[i*3+1]*vs[i*3+1])*3));col.setXYZ(i,rgb[0],rgb[1],rgb[2])}pos.needsUpdate=true;col.needsUpdate=true;
+        for(var j=att.length-1;j>=0;j--){att[j].s*=.97;if(Math.abs(att[j].s)<.01)att.splice(j,1)}},
+        pm(wx,wz,str){att.push({x:wx,y:0,z:wz,s:str*1.5})}}
+    },
+
+    storm(){
+        var CT=Math.floor(50000*resMult),geo=new THREE.BufferGeometry(),ps=new Float32Array(CT*3),cs=new Float32Array(CT*3),vs=new Float32Array(CT*3),lf=new Float32Array(CT);
+        function rsp(i){var a=Math.random()*Math.PI*2,r=2+Math.random()*5;ps[i*3]=Math.cos(a)*r;ps[i*3+1]=(Math.random()-.5)*2;ps[i*3+2]=Math.sin(a)*r;var sp=.5+Math.random()*2;vs[i*3]=Math.cos(a+Math.PI/2)*sp;vs[i*3+1]=(Math.random()-.5)*.5;vs[i*3+2]=Math.sin(a+Math.PI/2)*sp;lf[i]=3+Math.random()*6}
+        for(var i=0;i<CT;i++)rsp(i);geo.setAttribute('position',new THREE.BufferAttribute(ps,3));geo.setAttribute('color',new THREE.BufferAttribute(cs,3));
+        var pts=new THREE.Points(geo,new THREE.PointsMaterial({vertexColors:true,size:.05,transparent:true,opacity:.8}));worldGroup.add(pts);var bl=[],hO=0;
+        return{m:[pts],dc(){camera.position.set(0,15,18);camera.lookAt(0,0,0);orbitTarget.set(0,0,0);syncOrbit()},bg:[0,.01,.02],
+        up(dt){hO=(hO+dt/25)%1;var pos=geo.attributes.position,col=geo.attributes.color;
+        for(var i=0;i<CT;i++){var x=ps[i*3],y=ps[i*3+1],z=ps[i*3+2],dd=Math.sqrt(x*x+z*z)+.1,ag=Math.atan2(z,x);
+        let fl=(1.5/(dd*.5+1))*(1-s_fist)+(-4*s_fist);
+        vs[i*3]+=(-Math.sin(ag)*fl-x*.01)*dt;vs[i*3+1]+=(-y*.3)*dt;vs[i*3+2]+=(Math.cos(ag)*fl-z*.01)*dt;
+        for(var j=0;j<bl.length;j++){var b=bl[j],dx=x-b.x,dz=z-b.z,d=Math.sqrt(dx*dx+dz*dz)+.3,f=b.s/(d*d)*dt*5;vs[i*3]+=dx/d*f;vs[i*3+1]+=Math.random()*f*.5;vs[i*3+2]+=dz/d*f}
+        vs[i*3]*=.99;vs[i*3+1]*=.98;vs[i*3+2]*=.99;x+=vs[i*3];y+=vs[i*3+1];z+=vs[i*3+2];ps[i*3]=x;ps[i*3+1]=y;ps[i*3+2]=z;lf[i]-=dt;if(lf[i]<=0||dd>35)rsp(i);
+        var sp=Math.sqrt(vs[i*3]*vs[i*3]+vs[i*3+2]*vs[i*3+2]),rgb=hsl(.45+hO*.1+sp*.03,.8,Math.min(.65,.04+sp*1.5)*Math.min(1,lf[i]*.5));col.setXYZ(i,rgb[0],rgb[1],rgb[2])}pos.needsUpdate=true;col.needsUpdate=true;
+        for(var j=bl.length-1;j>=0;j--){bl[j].s*=.95;if(bl[j].s<.05)bl.splice(j,1)}},
+        pm(wx,wz,str){bl.push({x:wx,z:wz,s:str*2})}}
+    },
+
+    shatter(){
+        var CT=Math.floor(55000*resMult),geo=new THREE.BufferGeometry(),ps=new Float32Array(CT*3),cs=new Float32Array(CT*3),vs=new Float32Array(CT*3),home=new Float32Array(CT*3),side=Math.ceil(Math.sqrt(CT));
+        for(var i=0;i<CT;i++){var x=(i%side/side-.5)*40,z=(Math.floor(i/side)/side-.5)*40;ps[i*3]=x;ps[i*3+1]=0;ps[i*3+2]=z;home[i*3]=x;home[i*3+1]=0;home[i*3+2]=z}
+        geo.setAttribute('position',new THREE.BufferAttribute(ps,3));geo.setAttribute('color',new THREE.BufferAttribute(cs,3));
+        var pts=new THREE.Points(geo,new THREE.PointsMaterial({vertexColors:true,size:.055,transparent:true,opacity:.85}));worldGroup.add(pts);var impacts=[],hO=0;
+        return{m:[pts],dc(){camera.position.set(0,18,14);camera.lookAt(0,0,-2);orbitTarget.set(0,0,-2);syncOrbit()},bg:[.003,.003,.008],
+        up(dt){hO=(hO+dt/30)%1;var pos=geo.attributes.position,col=geo.attributes.color;
+        for(var i=0;i<CT;i++){var x=ps[i*3],y=ps[i*3+1],z=ps[i*3+2],hx=home[i*3],hz=home[i*3+2],blown=false;
+        for(var j=0;j<impacts.length;j++){var im=impacts[j],dx=hx-im.x,dz=hz-im.z,d=Math.sqrt(dx*dx+dz*dz);if(d<im.r){blown=true;var ang=Math.atan2(dz,dx),force=im.s*(1-d/im.r);vs[i*3]+=Math.cos(ang)*force*6*dt;vs[i*3+1]+=force*4*(1-im.age*.3)*dt*2;vs[i*3+2]+=Math.sin(ang)*force*6*dt}}
+        if(!blown){vs[i*3]+=(hx-x)*2*dt;vs[i*3+1]+=(0-y)*3*dt;vs[i*3+2]+=(hz-z)*2*dt}vs[i*3+1]-=9.8*dt*.3;vs[i*3]*=.97;vs[i*3+1]*=.97;vs[i*3+2]*=.97;x+=vs[i*3]*dt*3;y+=vs[i*3+1]*dt*3;z+=vs[i*3+2]*dt*3;if(y<-5){y=-5;vs[i*3+1]*=-.3}
+        x*=1-s_fist*.1;z*=1-s_fist*.1;
+        ps[i*3]=x;ps[i*3+1]=y;ps[i*3+2]=z;var disp=Math.sqrt((x-hx)*(x-hx)+y*y+(z-hz)*(z-hz)),sp=Math.sqrt(vs[i*3]*vs[i*3]+vs[i*3+1]*vs[i*3+1]),rgb=hsl(.6+hO-disp*.02+sp*.05,.3+Math.min(.5,disp*.05),Math.min(.6,.08+sp*.4+disp*.03));col.setXYZ(i,rgb[0],rgb[1],rgb[2])}pos.needsUpdate=true;col.needsUpdate=true;
+        for(var j=0;j<impacts.length;j++){impacts[j].age+=dt;impacts[j].s*=.96;impacts[j].r+=dt*8}for(var j=impacts.length-1;j>=0;j--){if(impacts[j].s<.02||impacts[j].age>4)impacts.splice(j,1)}},
+        pm(wx,wz,str){impacts.push({x:wx,z:wz,s:str*1.5,r:.5,age:0})}}
+    }
+};
+
+// ═══════════════════════════════════════════
+//  GAMES
+// ═══════════════════════════════════════════
+let entities=[],particles2D=[];
+const BUBBLE_COLORS=['#ff6464','#ffa532','#64dc64','#64b4ff','#b464ff'];
+const FRUIT_TYPES=[{e:'🍍',c:'255,223,0'},{e:'🍊',c:'255,165,0'},{e:'🍉',c:'252,108,133'},{e:'🍏',c:'141,182,0'},{e:'🍇',c:'111,45,168'}];
+
+function spawnGameEntity(){
+    if(currentMode==='bubbles')entities.push({x:Math.random()*W,y:H+50,r:30+Math.random()*40,sy:1.5+Math.random()*2,sx:(Math.random()-.5)*.8,wobble:Math.random()*Math.PI*2,color:BUBBLE_COLORS[Math.floor(Math.random()*BUBBLE_COLORS.length)]});
+    else if(currentMode==='fruits'){let t=FRUIT_TYPES[Math.floor(Math.random()*FRUIT_TYPES.length)];entities.push({x:Math.random()*W,y:H+50,r:60+Math.random()*30,sy:3+Math.random()*3,seed:Math.random()*100,emoji:t.e,color:t.c})}
+}
+function createSplash(x,y,colorStr,isFruit){for(let i=0;i<15;i++)particles2D.push({x,y,vx:(Math.random()-.5)*15,vy:(Math.random()-.5)*15,r:Math.random()*(isFruit?6:4)+2,color:isFruit?`rgba(${colorStr},`:colorStr,alpha:1,isFruit})}
+
+// ═══════════════════════════════════════════
+//  MODE / RES
+// ═══════════════════════════════════════════
+function setRes(res){
+    currentRes=res;resMult={low:.3,med:1,high:2}[res];
+    document.querySelectorAll('.res').forEach(b=>b.classList.remove('active'));
+    document.getElementById(`res-${res}`).classList.add('active');
+    if(currentCategory==='world')setMode(currentMode,'world');
+}
+
+window.setMode=function(mode,category){
+    currentMode=mode;currentCategory=category;
+    document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
+    document.getElementById(`btn-${mode}`).classList.add('active');
+    document.getElementById('flow-opts').style.display=(mode==='flow'||mode==='flow2')?'flex':'none';
+    if(category==='world'){
+        threeCanvas.style.display='block';gameCanvas.style.display='none';document.getElementById('game-ui').style.display='none';
+        while(worldGroup.children.length)worldGroup.remove(worldGroup.children[0]);
+        s_scale=1;s_rotZ=0;s_rotX=0;s_rotY=0;worldGroup.scale.set(1,1,1);worldGroup.rotation.set(0,0,0);
+        activeWorld=Worlds[mode]();activeWorld.dc();let bg=activeWorld.bg;renderer.setClearColor(new THREE.Color(bg[0],bg[1],bg[2]));
+    }else{
+        threeCanvas.style.display='none';gameCanvas.style.display='block';
+        if(uiVisible)document.getElementById('game-ui').style.display='block';
+        gameScore=0;scoreEl.innerText=gameScore;entities=[];particles2D=[];
+    }
+};
+
+// ═══════════════════════════════════════════
+//  FIST CHECK (simple)
+// ═══════════════════════════════════════════
+function checkFist(lm){
+    let wr=lm[0],sum=0;
+    [8,12,16,20].forEach(i=>sum+=Math.hypot(lm[i].x-wr.x,lm[i].y-wr.y));
+    return(sum/4)<0.25;
+}
+
+// ═══════════════════════════════════════════
+//  MEDIAPIPE RESULTS
+// ═══════════════════════════════════════════
+function onResults(results){
+    gesture.count=0;gesture.h1=null;gesture.h2=null;gesture.fist=false;gesture.label={};
+
+    const handCount=results.multiHandLandmarks?results.multiHandLandmarks.length:0;
+    handStatusEl.textContent=`Hands: ${handCount}`;
+
+    if(handCount===0){
+        statusEl.textContent=`Searching… (${camRotation}°)`;statusEl.style.color='rgba(255,255,255,0.4)';statusEl.className='badge b-status loading';
+        gestureHudEl.textContent='Gesture: —';
+        document.getElementById('labelL').style.opacity='0';document.getElementById('labelR').style.opacity='0';
+        lastGesture={left:null,right:null};
+        return;
+    }
+
+    statusEl.textContent=`Tracking (${camRotation}°)`;statusEl.style.color='#00ff78';statusEl.className='badge b-status';
+    gesture.count=handCount;
+
+    const detectedGestures={};
+
+    for(let i=0;i<handCount;i++){
+        const lm=results.multiHandLandmarks[i];
+        const handedness=results.multiHandedness[i].label;
+
+        // Classify gesture
+        const gName=classifyGesture(lm);
+        detectedGestures[handedness]=gName;
+        gesture.label[handedness]=gName;
+
+        // Floating label
+        updateFloatingLabel(handedness,gName,lm[0]);
+        // Hold detection
+        processGestureHold(handedness,gName);
+
+        // Physics data (for world interaction)
+        const hData={x:mirrorX?1-lm[9].x:lm[9].x, y:lm[9].y, fist:checkFist(lm)};
+        if(i===0){gesture.h1=hData;gesture.fist=hData.fist}
+        if(i===1){
+            gesture.h2=hData;gesture.fist=gesture.h1.fist||hData.fist;
+            gesture.dist=Math.hypot(gesture.h1.x-gesture.h2.x,gesture.h1.y-gesture.h2.y);
+            gesture.zoom=gesture.dist;
+            gesture.angle=Math.atan2(gesture.h2.y-gesture.h1.y,gesture.h1.x-gesture.h2.x);
+            gesture.midX=(gesture.h1.x+gesture.h2.x)/2;gesture.midY=(gesture.h1.y+gesture.h2.y)/2;
+        }
+    }
+
+    // HUD gesture badge
+    const active=Object.entries(detectedGestures).filter(([,g])=>g!=='None');
+    if(active.length>0){
+        gestureHudEl.textContent=active.map(([h,g])=>{const m=GESTURE_META[g]||{};return `${m.emoji||''} ${g}`}).join(' | ');
+    }else{gestureHudEl.textContent='Gesture: —'}
+
+    if(!detectedGestures['Left'])document.getElementById('labelL').style.opacity='0';
+    if(!detectedGestures['Right'])document.getElementById('labelR').style.opacity='0';
+}
+
+// ═══════════════════════════════════════════
+//  MAIN ANIMATION LOOP
+// ═══════════════════════════════════════════
+function animate(){
+    requestAnimationFrame(animate);
+    const now=performance.now();
+    const dt=Math.min((now-lastFrameTime)/1000,0.05);
+    lastFrameTime=now;time+=dt;
+
+    frameCount++;
+    if(frameCount%30===0)fpsEl.textContent=Math.round(1/dt)+' fps';
+
+    if(currentCategory==='world'&&activeWorld){
+        let t_scale=s_scale,t_rotZ=s_rotZ,t_rotX=s_rotX,t_rotY=s_rotY;
+        if(gesture.count===2){t_scale=Math.max(.1,gesture.zoom*3.5);t_rotZ=gesture.angle;t_rotX=(gesture.midY-.5)*Math.PI;t_rotY=(gesture.midX-.5)*Math.PI}
+        else if(gesture.count===0){t_scale=1;if(currentMode==='alien'||currentMode==='heavy'){t_rotX=s_rotX+.003;t_rotY=s_rotY+.005}}
+        s_scale+=(t_scale-s_scale)*.06;
+        let drZ=t_rotZ-s_rotZ;while(drZ>Math.PI)drZ-=Math.PI*2;while(drZ<-Math.PI)drZ+=Math.PI*2;s_rotZ+=drZ*.09;
+        s_rotX+=(t_rotX-s_rotX)*.06;s_rotY+=(t_rotY-s_rotY)*.06;
+        s_fist+=((gesture.fist?1:0)-s_fist)*.06;
+        worldGroup.scale.set(s_scale,s_scale,s_scale);worldGroup.rotation.set(s_rotX,s_rotY,s_rotZ);
+        activeWorld.up(dt);
+        if(gesture.h1){let w=s2w(gesture.h1.x*W,gesture.h1.y*H);if(w.hit)activeWorld.pm(w.x,w.z,.5+s_fist*2)}
+        if(gesture.h2){let w=s2w(gesture.h2.x*W,gesture.h2.y*H);if(w.hit)activeWorld.pm(w.x,w.z,.5+s_fist*2)}
+        if(currentMode==='flow'||currentMode==='flow2'){renderer.autoClearColor=false;fadeMat.color.setRGB(activeWorld.bg[0],activeWorld.bg[1],activeWorld.bg[2]);renderer.render(fadeScene,orthoCamera);renderer.render(scene,camera)}
+        else{renderer.autoClearColor=true;renderer.render(scene,camera)}
+    }else if(currentCategory==='game'){
+        gCtx.clearRect(0,0,W,H);
+        if(Math.random()<(currentMode==='bubbles'?.03:.02))spawnGameEntity();
+        for(let i=entities.length-1;i>=0;i--){let e=entities[i];e.y-=e.sy;
+        if(currentMode==='bubbles'){e.wobble+=.05;e.x+=Math.sin(e.wobble)*.5+e.sx}
+        gCtx.save();gCtx.translate(e.x,e.y);
+        if(currentMode==='bubbles'){gCtx.beginPath();gCtx.arc(0,0,e.r,0,Math.PI*2);gCtx.fillStyle=e.color+'40';gCtx.fill();gCtx.strokeStyle=e.color;gCtx.lineWidth=2;gCtx.stroke()}
+        else{gCtx.scale(1+Math.sin(time*3+e.seed)*.05,1+Math.cos(time*4+e.seed)*.05);gCtx.rotate(Math.sin(time+e.seed)*.2);gCtx.font=`${e.r*2}px Arial`;gCtx.textAlign='center';gCtx.textBaseline='middle';gCtx.fillText(e.emoji,0,0)}
+        gCtx.restore();
+        let hit=false;
+        if(gesture.h1&&Math.hypot(gesture.h1.x*W-e.x,gesture.h1.y*H-e.y)<e.r+30)hit=true;
+        if(gesture.h2&&Math.hypot(gesture.h2.x*W-e.x,gesture.h2.y*H-e.y)<e.r+30)hit=true;
+        if(hit){createSplash(e.x,e.y,e.color,currentMode==='fruits');gameScore+=currentMode==='fruits'?15:1;scoreEl.innerText=gameScore;entities.splice(i,1)}
+        else if(e.y+e.r<-100)entities.splice(i,1)}
+        for(let i=particles2D.length-1;i>=0;i--){let p=particles2D[i];p.x+=p.vx;p.y+=p.vy;p.vy+=.4;p.alpha-=.03;if(p.alpha<=0){particles2D.splice(i,1);continue}
+        gCtx.beginPath();gCtx.arc(p.x,p.y,p.r,0,Math.PI*2);gCtx.fillStyle=p.isFruit?`${p.color}${p.alpha})`:p.color;gCtx.globalAlpha=p.isFruit?1:p.alpha;gCtx.fill();gCtx.globalAlpha=1}
+        gCtx.strokeStyle=gesture.fist?'#ff4444':'#fff';gCtx.fillStyle=gesture.fist?'rgba(255,68,68,0.6)':'rgba(255,255,255,0.6)';gCtx.lineWidth=2;
+        if(gesture.h1){gCtx.beginPath();gCtx.arc(gesture.h1.x*W,gesture.h1.y*H,gesture.fist?10:15,0,Math.PI*2);gCtx.fill();gCtx.stroke()}
+        if(gesture.h2){gCtx.beginPath();gCtx.arc(gesture.h2.x*W,gesture.h2.y*H,gesture.fist?10:15,0,Math.PI*2);gCtx.fill();gCtx.stroke()}
+    }
+}
+
+// ═══════════════════════════════════════════
+//  CAMERA BOOTSTRAP
+// ═══════════════════════════════════════════
+let activeStream=null,isProcessing=false,currentDeviceId=null,lastVideoTime=-1;
+
+async function getCameras(){
+    try{
+        await navigator.mediaDevices.getUserMedia({video:true});
+        const devices=await navigator.mediaDevices.enumerateDevices();
+        const videoDevices=devices.filter(d=>d.kind==='videoinput');
+        camSelect.innerHTML='';
+        videoDevices.forEach((device,index)=>{const opt=document.createElement('option');opt.value=device.deviceId;let label=device.label||`Camera ${index+1}`;label=label.replace(/facing back/i,'Back').replace(/facing front/i,'Front');opt.text=label;camSelect.appendChild(opt)});
+        camSelect.addEventListener('change',()=>startCustomCamera(camSelect.value));
+        if(videoDevices.length>0){const frontCam=videoDevices.find(d=>d.label.toLowerCase().includes('front'));startCustomCamera(frontCam?frontCam.deviceId:videoDevices[0].deviceId)}
+    }catch(err){statusEl.textContent='Cam Error: '+err.name;statusEl.className='badge b-status error'}
+}
+
+async function startCustomCamera(deviceId){
+    if(activeStream){activeStream.getTracks().forEach(t=>t.stop());videoElement.srcObject=null;await new Promise(r=>setTimeout(r,250))}
+    currentDeviceId=deviceId;statusEl.textContent='Hardware Init…';
+    let constraints={video:deviceId?{deviceId:{exact:deviceId}}:{facingMode:'user'}};
+    try{activeStream=await navigator.mediaDevices.getUserMedia(constraints)}catch(e1){try{constraints={video:{deviceId}};activeStream=await navigator.mediaDevices.getUserMedia(constraints)}catch(e2){statusEl.textContent='CAM ERR: '+e2.name;return}}
+    videoElement.srcObject=activeStream;
+    try{await videoElement.play();if(!isProcessing){isProcessing=true;processLoop()}}catch(e){statusEl.textContent='PLAY ERR: '+e.message}
+}
+
+const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+hands.setOptions({maxNumHands:2,modelComplexity:1,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
+hands.onResults(onResults);
+
+async function processLoop(){
+    if(!isProcessing)return;
+    if(!videoElement.paused&&!videoElement.ended&&videoElement.readyState>=2){
+        if(videoElement.currentTime!==lastVideoTime){
+            lastVideoTime=videoElement.currentTime;
+            if(camRotation===0){await hands.send({image:videoElement})}
+            else{const vw=videoElement.videoWidth,vh=videoElement.videoHeight;
+            if(vw&&vh){if(camRotation===90||camRotation===270){processCanvas.width=vh;processCanvas.height=vw}else{processCanvas.width=vw;processCanvas.height=vh}
+            processCtx.save();processCtx.translate(processCanvas.width/2,processCanvas.height/2);processCtx.rotate(camRotation*Math.PI/180);processCtx.drawImage(videoElement,-vw/2,-vh/2,vw,vh);processCtx.restore();
+            await hands.send({image:processCanvas})}}
+        }
+    }
+    requestAnimationFrame(processLoop);
+}
+
+window.addEventListener('resize',()=>{W=window.innerWidth;H=window.innerHeight;renderer.setSize(W,H);camera.aspect=W/H;camera.updateProjectionMatrix();gameCanvas.width=W;gameCanvas.height=H});
+
+// BOOT
+setMode('pond','world');
+animate();
+getCameras();
+</script>
+</body>
+</html>
