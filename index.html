@@ -14,9 +14,12 @@
     *{margin:0;padding:0;box-sizing:border-box}
     body{background:#050508;overflow:hidden;font-family:'JetBrains Mono',monospace;user-select:none;touch-action:none;overscroll-behavior:none}
     
-    video{display:none}
-    #three-canvas,#game-canvas{position:absolute;top:0;left:0;width:100vw;height:100dvh;object-fit:cover;z-index:1}
+    video{position:absolute;top:0;left:0;width:100vw;height:100dvh;object-fit:cover;z-index:0;opacity:0;transition:opacity .3s;transform:scaleX(-1)}
+    video.cam-on{opacity:1}
+    #three-canvas,#game-canvas{position:absolute;top:0;left:0;width:100vw;height:100dvh;object-fit:cover;z-index:1;transition:opacity .3s}
+    #three-canvas.cam-through{opacity:0.3}
     #game-canvas{z-index:2;display:none}
+    #game-canvas.cam-through{background:transparent}
 
     /* ── HUD ── */
     #hud{
@@ -164,6 +167,7 @@
 <!-- Top controls -->
 <div id="top-controls">
     <button class="btn" id="btn-ui-toggle" onclick="toggleUI()" style="padding:5px 8px;font-size:13px;background:rgba(0,0,0,0.5)">👁️</button>
+    <button class="btn" id="btn-cam-view" onclick="toggleCamView()" style="padding:5px 8px;font-size:13px;background:rgba(0,0,0,0.5)">📷</button>
     <button class="btn" onclick="toggleFS()" style="padding:5px 8px;font-size:13px;background:rgba(0,0,0,0.5)">⛶</button>
 </div>
 
@@ -237,6 +241,7 @@ let currentMode = 'pond', currentCategory = 'world', currentRes = 'med';
 let resMult = 1.0, gameScore = 0;
 let camRotation = 0, mirrorX = true;
 let uiVisible = true;
+let camView = false;
 
 // Gesture tracking
 let gesture = { count:0, fist:false, zoom:1.0, angle:0, midX:0.5, midY:0.5, h1:null, h2:null, label:{} };
@@ -396,6 +401,16 @@ window.toggleMirror=function(){
     const btn=document.getElementById('btn-mirror');
     btn.classList.toggle('active',mirrorX);
     btn.style.color=mirrorX?'#00ff78':'rgba(255,255,255,0.5)';
+    videoElement.style.transform=mirrorX?'scaleX(-1)':'none';
+};
+window.toggleCamView=function(){
+    camView=!camView;
+    const btn=document.getElementById('btn-cam-view');
+    videoElement.classList.toggle('cam-on',camView);
+    threeCanvas.classList.toggle('cam-through',camView);
+    gameCanvas.classList.toggle('cam-through',camView);
+    if(camView){btn.style.color='#00ff78';btn.style.borderColor='rgba(0,255,120,0.4)';renderer.setClearAlpha(camView?0:1)}
+    else{btn.style.color='rgba(255,255,255,0.5)';btn.style.borderColor='rgba(255,255,255,0.1)';if(activeWorld){let bg=activeWorld.bg;renderer.setClearColor(new THREE.Color(bg[0],bg[1],bg[2]),1)}}
 };
 
 // ═══════════════════════════════════════════
@@ -416,7 +431,7 @@ fadeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),fadeMat));
 
 const camera=new THREE.PerspectiveCamera(75,W/H,0.1,2000);
 const renderer=new THREE.WebGLRenderer({canvas:threeCanvas,alpha:true,antialias:false});
-renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2.5));
+renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2.5));renderer.setClearAlpha(1);
 
 let orbit={theta:0,phi:Math.PI/3,radius:16},orbitTarget=new THREE.Vector3(0,0,0);
 function syncOrbit(){var d=camera.position.clone().sub(orbitTarget);orbit.radius=d.length();orbit.phi=Math.acos(Math.max(-1,Math.min(1,d.y/orbit.radius)));orbit.theta=Math.atan2(d.x,d.z)}
@@ -642,7 +657,7 @@ window.setMode=function(mode,category){
         threeCanvas.style.display='block';gameCanvas.style.display='none';document.getElementById('game-ui').style.display='none';
         while(worldGroup.children.length)worldGroup.remove(worldGroup.children[0]);
         s_scale=1;s_rotZ=0;s_rotX=0;s_rotY=0;worldGroup.scale.set(1,1,1);worldGroup.rotation.set(0,0,0);
-        activeWorld=Worlds[mode]();activeWorld.dc();let bg=activeWorld.bg;renderer.setClearColor(new THREE.Color(bg[0],bg[1],bg[2]));
+        activeWorld=Worlds[mode]();activeWorld.dc();let bg=activeWorld.bg;renderer.setClearColor(new THREE.Color(bg[0],bg[1],bg[2]),camView?0:1);
     }else{
         threeCanvas.style.display='none';gameCanvas.style.display='block';
         if(uiVisible)document.getElementById('game-ui').style.display='block';
@@ -741,8 +756,8 @@ function animate(){
         activeWorld.up(dt);
         if(gesture.h1){let w=s2w(gesture.h1.x*W,gesture.h1.y*H);if(w.hit)activeWorld.pm(w.x,w.z,.5+s_fist*2)}
         if(gesture.h2){let w=s2w(gesture.h2.x*W,gesture.h2.y*H);if(w.hit)activeWorld.pm(w.x,w.z,.5+s_fist*2)}
-        if(currentMode==='flow'||currentMode==='flow2'){renderer.autoClearColor=false;fadeMat.color.setRGB(activeWorld.bg[0],activeWorld.bg[1],activeWorld.bg[2]);renderer.render(fadeScene,orthoCamera);renderer.render(scene,camera)}
-        else{renderer.autoClearColor=true;renderer.render(scene,camera)}
+        if(currentMode==='flow'||currentMode==='flow2'){renderer.autoClearColor=false;if(!camView){fadeMat.color.setRGB(activeWorld.bg[0],activeWorld.bg[1],activeWorld.bg[2]);renderer.render(fadeScene,orthoCamera)}renderer.render(scene,camera)}
+        else{renderer.autoClearColor=true;renderer.setClearAlpha(camView?0:1);renderer.render(scene,camera)}
     }else if(currentCategory==='game'){
         gCtx.clearRect(0,0,W,H);
         if(Math.random()<(currentMode==='bubbles'?.03:.02))spawnGameEntity();
@@ -783,12 +798,18 @@ async function getCameras(){
 }
 
 async function startCustomCamera(deviceId){
-    if(activeStream){activeStream.getTracks().forEach(t=>t.stop());videoElement.srcObject=null;await new Promise(r=>setTimeout(r,250))}
-    currentDeviceId=deviceId;statusEl.textContent='Hardware Init…';
-    let constraints={video:deviceId?{deviceId:{exact:deviceId}}:{facingMode:'user'}};
-    try{activeStream=await navigator.mediaDevices.getUserMedia(constraints)}catch(e1){try{constraints={video:{deviceId}};activeStream=await navigator.mediaDevices.getUserMedia(constraints)}catch(e2){statusEl.textContent='CAM ERR: '+e2.name;return}}
+    if(activeStream){activeStream.getTracks().forEach(t=>t.stop());videoElement.srcObject=null;await new Promise(r=>setTimeout(r,300))}
+    currentDeviceId=deviceId;statusEl.textContent='Hardware Init…';statusEl.className='badge b-status loading';
+    // Sync dropdown
+    for(let i=0;i<camSelect.options.length;i++){if(camSelect.options[i].value===deviceId){camSelect.selectedIndex=i;break}}
+    let constraints={video:deviceId?{deviceId:{exact:deviceId},width:{ideal:1280},height:{ideal:720}}:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}};
+    try{activeStream=await navigator.mediaDevices.getUserMedia(constraints)}
+    catch(e1){try{constraints={video:{deviceId,width:{ideal:1280},height:{ideal:720}}};activeStream=await navigator.mediaDevices.getUserMedia(constraints)}
+    catch(e2){try{constraints={video:{deviceId}};activeStream=await navigator.mediaDevices.getUserMedia(constraints)}
+    catch(e3){statusEl.textContent='CAM ERR: '+e3.name;statusEl.className='badge b-status error';return}}}
     videoElement.srcObject=activeStream;
-    try{await videoElement.play();if(!isProcessing){isProcessing=true;processLoop()}}catch(e){statusEl.textContent='PLAY ERR: '+e.message}
+    try{await videoElement.play();statusEl.textContent=`Tracking (${camRotation}°)`;statusEl.style.color='#00ff78';statusEl.className='badge b-status';if(!isProcessing){isProcessing=true;processLoop()}}
+    catch(e){statusEl.textContent='PLAY ERR: '+e.message;statusEl.className='badge b-status error'}
 }
 
 const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
