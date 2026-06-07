@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEON AURA AR — HandConnect</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<!-- MediaPipe Hands CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg: #02020f;
+    --accent: #00ffcc;
+    --accent2: #ff00aa;
+    --glass: rgba(10, 15, 35, 0.55);
+    --glass-border: rgba(0, 255, 204, 0.18);
+    --blur: blur(18px);
+    --font-hud: 'Share Tech Mono', monospace;
+    --font-display: 'Orbitron', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: #fff;
+    overflow: hidden;
+    font-family: var(--font-hud);
+  }
+
+  /* ── CANVASES ── */
+  .video-container {
+    position: absolute;
+    inset: 0;
+  }
+
+  .input_video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    z-index: 0;
+    filter: brightness(0.55) contrast(1.15) saturate(0.8);
+  }
+
+  #bgCanvas, #mainCanvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    transform: scaleX(-1);
+  }
+
+  #bgCanvas  { z-index: 1; pointer-events: none; }
+  #mainCanvas { z-index: 5; pointer-events: none; }
+
+  /* ── SCANLINE OVERLAY ── */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 3px,
+      rgba(0,0,0,0.07) 3px,
+      rgba(0,0,0,0.07) 4px
+    );
+  }
+
+  /* ── HUD ── */
+  #hud {
+    position: absolute;
+    top: 24px;
+    left: 24px;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    pointer-events: none;
+    transition: opacity 0.6s;
+  }
+
+  .panel {
+    background: var(--glass);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    padding: 14px 20px;
+    box-shadow: 0 0 30px rgba(0,255,204,0.06), 0 8px 32px rgba(0,0,0,0.6);
+    min-width: 210px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 3px; height: 100%;
+    background: linear-gradient(to bottom, var(--accent), var(--accent2));
+    border-radius: 6px 0 0 6px;
+  }
+
+  .panel-title {
+    font-family: var(--font-display);
+    font-size: 0.55rem;
+    letter-spacing: 0.2em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    opacity: 0.7;
+  }
+
+  .stat {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.7);
+    margin-bottom: 6px;
+    gap: 16px;
+  }
+  .stat:last-child { margin-bottom: 0; }
+
+  .val {
+    font-weight: bold;
+    color: var(--accent);
+    text-shadow: 0 0 8px var(--accent);
+    font-size: 0.85rem;
+  }
+
+  /* ── CORNER BRACKETS ── */
+  .bracket {
+    position: absolute;
+    width: 14px; height: 14px;
+    border-color: var(--accent);
+    border-style: solid;
+    opacity: 0.5;
+  }
+  .bracket.tl { top: 4px; left: 4px; border-width: 1px 0 0 1px; }
+  .bracket.tr { top: 4px; right: 4px; border-width: 1px 1px 0 0; }
+  .bracket.bl { bottom: 4px; left: 4px; border-width: 0 0 1px 1px; }
+  .bracket.br { bottom: 4px; right: 4px; border-width: 0 1px 1px 0; }
+
+  /* ── THEME BAR ── */
+  #themes {
+    position: absolute;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    display: flex;
+    gap: 8px;
+    background: var(--glass);
+    backdrop-filter: var(--blur);
+    border: 1px solid var(--glass-border);
+    border-radius: 40px;
+    padding: 8px 12px;
+    transition: opacity 0.5s;
+  }
+
+  .theme-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    color: rgba(255,255,255,0.5);
+    padding: 6px 18px;
+    border-radius: 24px;
+    cursor: pointer;
+    font-family: var(--font-hud);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    transition: all 0.25s ease;
+  }
+
+  .theme-btn:hover { color: #fff; border-color: rgba(255,255,255,0.2); }
+
+  .theme-btn.active {
+    background: rgba(255,255,255,0.12);
+    border-color: rgba(255,255,255,0.35);
+    color: #fff;
+    text-shadow: 0 0 12px #fff;
+  }
+
+  /* ── CORNER WATERMARK ── */
+  #watermark {
+    position: absolute;
+    bottom: 28px;
+    right: 28px;
+    z-index: 20;
+    font-family: var(--font-display);
+    font-size: 0.6rem;
+    letter-spacing: 0.25em;
+    color: rgba(255,255,255,0.18);
+    pointer-events: none;
+  }
+
+  /* ── START OVERLAY ── */
+  #startOverlay {
+    position: absolute;
+    inset: 0;
+    background: #02020f;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 0;
+    transition: opacity 0.7s ease;
+  }
+
+  #startOverlay.hidden { opacity: 0; pointer-events: none; }
+  .hidden { opacity: 0; pointer-events: none; }
+
+  .overlay-bg {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  .overlay-bg::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 60% 50% at 30% 50%, rgba(0,255,204,0.07) 0%, transparent 70%),
+      radial-gradient(ellipse 60% 50% at 70% 50%, rgba(255,0,170,0.07) 0%, transparent 70%);
+  }
+
+  /* animated grid */
+  .overlay-grid {
+    position: absolute;
+    inset: -50%;
+    width: 200%; height: 200%;
+    background-image:
+      linear-gradient(rgba(0,255,204,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,204,0.04) 1px, transparent 1px);
+    background-size: 60px 60px;
+    animation: gridDrift 20s linear infinite;
+  }
+
+  @keyframes gridDrift {
+    from { transform: translate(0,0); }
+    to   { transform: translate(60px, 60px); }
+  }
+
+  .overlay-content {
+    position: relative;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 32px;
+  }
+
+  .logo-ring {
+    width: 110px; height: 110px;
+    border-radius: 50%;
+    border: 1px solid rgba(0,255,204,0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    animation: ringPulse 3s ease-in-out infinite;
+  }
+
+  .logo-ring::before {
+    content: '';
+    position: absolute;
+    inset: 6px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,0,170,0.25);
+    animation: ringPulse 3s ease-in-out infinite reverse;
+  }
+
+  .logo-ring svg {
+    width: 48px; height: 48px;
+    opacity: 0.85;
+  }
+
+  @keyframes ringPulse {
+    0%, 100% { box-shadow: 0 0 20px rgba(0,255,204,0.15); }
+    50%       { box-shadow: 0 0 40px rgba(0,255,204,0.35); }
+  }
+
+  .overlay-title {
+    font-family: var(--font-display);
+    font-size: clamp(2rem, 6vw, 3.8rem);
+    font-weight: 900;
+    letter-spacing: 0.15em;
+    line-height: 1;
+    background: linear-gradient(135deg, #00ffcc 0%, #ffffff 50%, #ff00aa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    text-transform: uppercase;
+  }
+
+  .overlay-sub {
+    font-size: 0.75rem;
+    letter-spacing: 0.3em;
+    color: rgba(255,255,255,0.35);
+    text-transform: uppercase;
+  }
+
+  .start-btn {
+    padding: 15px 52px;
+    font-family: var(--font-display);
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 4px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: color 0.3s, box-shadow 0.3s;
+  }
+
+  .start-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.3s ease;
+    z-index: -1;
+  }
+
+  .start-btn:hover {
+    color: #02020f;
+    box-shadow: 0 0 30px rgba(0,255,204,0.4);
+  }
+  .start-btn:hover::before { transform: scaleX(1); }
+
+  .overlay-hint {
+    font-size: 0.65rem;
+    letter-spacing: 0.15em;
+    color: rgba(255,255,255,0.22);
+    text-transform: uppercase;
+  }
+
+  /* ── GESTURE FLASH ── */
+  #gestureFlash {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 30;
+    font-family: var(--font-display);
+    font-size: clamp(1.5rem, 4vw, 2.5rem);
+    font-weight: 900;
+    letter-spacing: 0.2em;
+    color: #fff;
+    text-shadow: 0 0 30px var(--accent), 0 0 60px var(--accent);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.1s;
+    text-transform: uppercase;
+  }
+
+  #gestureFlash.show {
+    animation: flashAnim 0.8s ease forwards;
+  }
+
+  @keyframes flashAnim {
+    0%   { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+    60%  { opacity: 0.9; transform: translate(-50%, -50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -58%) scale(0.95); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── START OVERLAY ── -->
+<div id="startOverlay">
+  <div class="overlay-bg">
+    <div class="overlay-grid"></div>
+  </div>
+  <div class="overlay-content">
+    <div class="logo-ring">
+      <!-- Hand SVG icon -->
+      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M24 6C24 4.9 23.1 4 22 4C20.9 4 20 4.9 20 6V22H18V10C18 8.9 17.1 8 16 8C14.9 8 14 8.9 14 10V26L10.7 22.7C10 22 8.9 22 8.2 22.7C7.5 23.4 7.5 24.5 8.2 25.2L16 33C18.1 35.1 21 36.5 24 36.5C29.8 36.5 34.5 31.8 34.5 26V10C34.5 8.9 33.6 8 32.5 8C31.4 8 30.5 8.9 30.5 10V20H28V8C28 6.9 27.1 6 26 6C24.9 6 24 6.9 24 8V6Z" fill="url(#hg)"/>
+        <defs>
+          <linearGradient id="hg" x1="8" y1="4" x2="34.5" y2="36.5" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#00ffcc"/>
+            <stop offset="1" stop-color="#ff00aa"/>
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+    <div>
+      <div class="overlay-title">Neon Aura</div>
+      <div class="overlay-sub" style="margin-top:10px;">Hand Tracking AR Experience</div>
+    </div>
+    <button class="start-btn" id="startBtn">Activate</button>
+    <div class="overlay-hint">Allow camera access &nbsp;·&nbsp; Best on desktop</div>
+  </div>
+</div>
+
+<!-- ── CAMERA + CANVASES ── -->
+<div class="video-container">
+  <video class="input_video" autoplay playsinline></video>
+  <canvas id="bgCanvas"></canvas>
+  <canvas id="mainCanvas"></canvas>
+</div>
+
+<!-- ── HUD ── -->
+<div id="hud" class="hidden">
+  <div class="panel">
+    <div class="bracket tl"></div><div class="bracket tr"></div>
+    <div class="bracket bl"></div><div class="bracket br"></div>
+    <div class="panel-title">Detection</div>
+    <div class="stat">Hands <span class="val" id="ui-hands">0</span></div>
+    <div class="stat">FPS <span class="val" id="ui-fps">--</span></div>
+  </div>
+  <div class="panel">
+    <div class="bracket tl"></div><div class="bracket tr"></div>
+    <div class="bracket bl"></div><div class="bracket br"></div>
+    <div class="panel-title">Gesture</div>
+    <div class="stat">State <span class="val" id="ui-gesture">—</span></div>
+    <div class="stat">Spread <span class="val" id="ui-spread">0%</span></div>
+  </div>
+</div>
+
+<!-- ── THEME BAR ── -->
+<div id="themes" class="hidden">
+  <button class="theme-btn active" data-theme="Rainbow">Rainbow</button>
+  <button class="theme-btn" data-theme="Cyberpunk">Cyberpunk</button>
+  <button class="theme-btn" data-theme="Lava">Lava</button>
+  <button class="theme-btn" data-theme="Ocean">Ocean</button>
+  <button class="theme-btn" data-theme="Galaxy">Galaxy</button>
+</div>
+
+<div id="watermark">NEON AURA AR v1.0</div>
+<div id="gestureFlash"></div>
+
+<script>
+/* ────────────────────────────────────────────────
+   GLOBALS
+──────────────────────────────────────────────── */
+const videoEl   = document.querySelector('.input_video');
+const bgCanvas  = document.getElementById('bgCanvas');
+const mainCanvas= document.getElementById('mainCanvas');
+const bgCtx     = bgCanvas.getContext('2d');
+const ctx       = mainCanvas.getContext('2d');
+
+let W = window.innerWidth;
+let H = window.innerHeight;
+let time = 0;
+let lastTime = performance.now();
+let framesThisSec = 0;
+let lastFpsTime   = performance.now();
+
+let currentHands  = [];
+let handVelocities = 0;
+
+const uiHands   = document.getElementById('ui-hands');
+const uiFps     = document.getElementById('ui-fps');
+const uiGesture = document.getElementById('ui-gesture');
+const uiSpread  = document.getElementById('ui-spread');
+const gestureFlash = document.getElementById('gestureFlash');
+
+/* ── THEMES ── */
+let currentTheme = 'Rainbow';
+const themes = {
+  Rainbow:  (t, i, n) => `hsl(${(t * 80 + i * (360 / Math.max(n,1))) % 360}, 100%, 60%)`,
+  Cyberpunk:(t, i, n) => (i % 2 === 0) ? '#ff003c' : '#00f0ff',
+  Lava:     (t, i, n) => `hsl(${(10 + i * 10) % 40}, 100%, ${50 + Math.sin(t) * 10}%)`,
+  Ocean:    (t, i, n) => `hsl(${180 + i * 20}, 100%, 60%)`,
+  Galaxy:   (t, i, n) => `hsl(${260 + Math.sin(t * 2 + i) * 40}, 100%, 65%)`
+};
+
+/* ── PHYSICS ── */
+let particles = [];
+let ripples   = [];
+const TIPS = [4, 8, 12, 16, 20];
+
+/* ── MATRIX RAIN ── */
+let matrixCols = [];
+const FS = 14;
+let maxCols = 0;
+
+/* ── AUDIO ── */
+let audioCtx = null, humOsc = null, humGain = null;
+
+/* ── PINCH STATE ── */
+let lastPinch = [false, false];
+
+/* ────────────────────────────────────────────────
+   RESIZE
+──────────────────────────────────────────────── */
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  bgCanvas.width  = mainCanvas.width  = W;
+  bgCanvas.height = mainCanvas.height = H;
+  maxCols = Math.floor(W / FS);
+  matrixCols = Array.from({length: maxCols}, () => Math.random() * H / FS);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ────────────────────────────────────────────────
+   THEME SWITCHER
+──────────────────────────────────────────────── */
+document.querySelectorAll('.theme-btn').forEach(btn => {
+  btn.addEventListener('click', e => {
+    document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+    e.target.classList.add('active');
+    currentTheme = e.target.dataset.theme;
+    document.documentElement.style.setProperty('--accent', themes[currentTheme](0, 1, 1));
+  });
+});
+
+/* ────────────────────────────────────────────────
+   START
+──────────────────────────────────────────────── */
+document.getElementById('startBtn').addEventListener('click', () => {
+  document.getElementById('startOverlay').classList.add('hidden');
+  document.getElementById('hud').classList.remove('hidden');
+  document.getElementById('themes').classList.remove('hidden');
+  initAudio();
+  initMediaPipe();
+  requestAnimationFrame(renderLoop);
+});
+
+/* ────────────────────────────────────────────────
+   AUDIO
+──────────────────────────────────────────────── */
+function initAudio() {
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    humOsc  = audioCtx.createOscillator();
+    humGain = audioCtx.createGain();
+    humOsc.type = 'sine';
+    humOsc.frequency.value = 80;
+    humGain.gain.value = 0;
+    humOsc.connect(humGain);
+    humGain.connect(audioCtx.destination);
+    humOsc.start();
+  } catch(e) { console.warn('WebAudio unavailable', e); }
+}
+
+function triggerZap() {
+  if (!audioCtx) return;
+  const osc  = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(900, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.12);
+  gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.15);
+}
+
+function updateHum(hands) {
+  if (!audioCtx || !humGain) return;
+  if (hands.length < 2) {
+    humGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+    return;
+  }
+  const p1 = hands[0][8], p2 = hands[1][8];
+  const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+  const proximity = Math.max(0, 1 - dist);
+  humOsc.frequency.setTargetAtTime(80 + proximity * 320, audioCtx.currentTime, 0.08);
+  humGain.gain.setTargetAtTime(0.04 + proximity * 0.14, audioCtx.currentTime, 0.08);
+}
+
+/* ────────────────────────────────────────────────
+   HELPERS
+──────────────────────────────────────────────── */
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function toCanvas(p) { return { x: p.x * W, y: p.y * H }; }
+
+function flashGesture(text) {
+  gestureFlash.textContent = text;
+  gestureFlash.className = '';
+  void gestureFlash.offsetWidth;
+  gestureFlash.className = 'show';
+}
+
+/* ────────────────────────────────────────────────
+   GESTURES
+──────────────────────────────────────────────── */
+function detectGestures() {
+  if (!currentHands.length) return;
+
+  currentHands.forEach((hand, idx) => {
+    const thumb = hand[4], index = hand[8];
+    const d = dist(thumb, index);
+    const pinching = d < 0.05;
+    if (pinching && !lastPinch[idx]) {
+      const mid = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
+      spawnRipple(toCanvas(mid), themes[currentTheme](time, 1, 1));
+      spawnParticles(toCanvas(mid), themes[currentTheme](time, 1, 1), 12);
+      triggerZap();
+      uiGesture.textContent = 'PINCH';
+      flashGesture('✦ PINCH ✦');
+    }
+    lastPinch[idx] = pinching;
+  });
+
+  if (currentHands[0]) {
+    const s = dist(currentHands[0][8], currentHands[0][20]);
+    const pct = Math.min(Math.round(s * 300), 100);
+    uiSpread.textContent = pct + '%';
+    if (!lastPinch.includes(true)) {
+      uiGesture.textContent = pct > 50 ? 'Open' : 'Fist';
+    }
+  }
+}
+
+/* ────────────────────────────────────────────────
+   PARTICLES & RIPPLES
+──────────────────────────────────────────────── */
+function spawnParticles(pos, color, count = 3) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 5;
+    particles.push({
+      x: pos.x, y: pos.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      color,
+      size: Math.random() * 3 + 1
+    });
+  }
+}
+
+function spawnRipple(pos, color) {
+  ripples.push({
+    x: pos.x, y: pos.y,
+    r: 0,
+    maxR: 140 + Math.random() * 80,
+    life: 1,
+    color
+  });
+}
+
+/* ────────────────────────────────────────────────
+   BACKGROUND — Matrix rain
+──────────────────────────────────────────────── */
+function drawBackground() {
+  bgCtx.globalCompositeOperation = 'destination-out';
+  bgCtx.fillStyle = `rgba(0,0,0,${0.12 + Math.min(handVelocities * 8, 0.4)})`;
+  bgCtx.fillRect(0, 0, W, H);
+  bgCtx.globalCompositeOperation = 'source-over';
+
+  const col = themes[currentTheme](time, 1, 1);
+  bgCtx.fillStyle = col;
+  bgCtx.font = FS + 'px "Share Tech Mono", monospace';
+
+  const speedMult = 1 + handVelocities * 80;
+  for (let i = 0; i < matrixCols.length; i++) {
+    if (Math.random() > 0.96) {
+      const char = String.fromCharCode(0x30A0 + Math.floor(Math.random() * 96));
+      bgCtx.globalAlpha = 0.35 + Math.random() * 0.3;
+      bgCtx.fillText(char, i * FS, matrixCols[i] * FS);
+    }
+    matrixCols[i] += Math.random() * speedMult;
+    if (matrixCols[i] * FS > H && Math.random() > 0.9) matrixCols[i] = 0;
+  }
+  bgCtx.globalAlpha = 1;
+}
+
+/* ────────────────────────────────────────────────
+   PHYSICS RENDER
+──────────────────────────────────────────────── */
+function updatePhysics() {
+  // particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.08;
+    p.life -= 0.018;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = p.life;
+    ctx.fill();
+  }
+
+  // ripples
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const r = ripples[i];
+    r.r += (r.maxR - r.r) * 0.1;
+    r.life -= 0.025;
+    if (r.life <= 0) { ripples.splice(i, 1); continue; }
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = 3 * r.life;
+    ctx.globalAlpha = r.life * 0.8;
+    ctx.stroke();
+    // inner ring
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.r * 0.5, 0, Math.PI * 2);
+    ctx.lineWidth = 1.5 * r.life;
+    ctx.globalAlpha = r.life * 0.4;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ────────────────────────────────────────────────
+   MAIN RENDER LOOP
+──────────────────────────────────────────────── */
+function renderLoop(ts) {
+  requestAnimationFrame(renderLoop);
+
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+  time += dt;
+
+  framesThisSec++;
+  if (ts > lastFpsTime + 1000) {
+    uiFps.textContent = framesThisSec;
+    framesThisSec = 0;
+    lastFpsTime = ts;
+  }
+
+  // --- Background ---
+  drawBackground();
+
+  // --- Main canvas fade ---
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'screen';
+
+  updatePhysics();
+
+  if (currentHands.length > 0) {
+
+    /* 1. SKELETON + FINGERTIP SPARKS */
+    currentHands.forEach((hand, hi) => {
+      const glowCol = themes[currentTheme](time, hi, 2);
+
+      // MediaPipe connectors
+      drawConnectors(ctx, hand, HAND_CONNECTIONS, {
+        color: glowCol,
+        lineWidth: 1.8
+      });
+
+      // Landmarks glow
+      ctx.shadowBlur = 18;
+      ctx.shadowColor = glowCol;
+
+      TIPS.forEach((ti, idx) => {
+        const pt = toCanvas(hand[ti]);
+        const tipCol = themes[currentTheme](time, idx, TIPS.length);
+
+        // Outer halo
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
+        ctx.strokeStyle = tipCol;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.4 + 0.3 * Math.sin(time * 4 + idx);
+        ctx.stroke();
+
+        // Core dot
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.globalAlpha = 1;
+        ctx.fill();
+
+        // Sparks
+        if (Math.random() > 0.55) spawnParticles(pt, tipCol, 1);
+      });
+
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+    });
+
+    /* 2. TWO-HAND INTERACTIONS */
+    if (currentHands.length >= 2) {
+      const h1 = currentHands[0];
+      const h2 = currentHands[1];
+
+      TIPS.forEach((ti, idx) => {
+        const p1 = toCanvas(h1[ti]);
+        const p2 = toCanvas(h2[ti]);
+        const d  = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+        const col = themes[currentTheme](time, idx, TIPS.length);
+
+        // Lightning when close
+        if (d < 160 && Math.random() > 0.45) {
+          const jitter = d * 0.35;
+          const mx = (p1.x + p2.x) / 2 + (Math.random() - 0.5) * jitter;
+          const my = (p1.y + p2.y) / 2 + (Math.random() - 0.5) * jitter;
+          ctx.beginPath();
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(mx, my);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.strokeStyle = '#fff';
+          ctx.shadowBlur = 25;
+          ctx.shadowColor = col;
+          ctx.lineWidth = 2 + Math.random() * 2;
+          ctx.globalAlpha = 0.7 + Math.random() * 0.3;
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        }
+
+        // Gradient connector
+        const grad = ctx.createLinearGradient(p1.x, p1.y, p2.x, p2.y);
+        grad.addColorStop(0,   themes[currentTheme](time, idx,     5));
+        grad.addColorStop(0.5, themes[currentTheme](time, idx + 1, 5));
+        grad.addColorStop(1,   themes[currentTheme](time, idx + 2, 5));
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = col;
+        ctx.globalAlpha = 0.75;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 1;
+      });
+
+      /* Mandala from all 10 tips */
+      const allTips = [
+        ...TIPS.map(t => toCanvas(h1[t])),
+        ...TIPS.map(t => toCanvas(h2[t]))
+      ];
+      const cx = allTips.reduce((s, p) => s + p.x, 0) / 10;
+      const cy = allTips.reduce((s, p) => s + p.y, 0) / 10;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(time * 0.4);
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const a = { x: allTips[i].x - cx, y: allTips[i].y - cy };
+        const b = { x: allTips[(i + 3) % 10].x - cx, y: allTips[(i + 3) % 10].y - cy };
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 1;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    detectGestures();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+}
+
+/* ────────────────────────────────────────────────
+   MEDIAPIPE
+──────────────────────────────────────────────── */
+function initMediaPipe() {
+  const hands = new Hands({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+  });
+
+  hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.7
+  });
+
+  hands.onResults(results => {
+    if (!audioCtx) return;
+
+    const detected = results.multiHandLandmarks || [];
+    uiHands.textContent = detected.length;
+
+    // Velocity
+    if (currentHands.length > 0 && detected.length > 0) {
+      const old = currentHands[0][8];
+      const nw  = detected[0][8];
+      handVelocities = old && nw ? dist(old, nw) : 0;
+    } else {
+      handVelocities = 0;
+    }
+
+    currentHands = detected;
+    updateHum(currentHands);
+  });
+
+  const camera = new Camera(videoEl, {
+    onFrame: async () => { await hands.send({ image: videoEl }); },
+    width: 1280,
+    height: 720,
+    facingMode: 'user'
+  });
+  camera.start();
+}
+</script>
+</body>
+</html>
