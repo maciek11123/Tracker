@@ -12,10 +12,9 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#050508;overflow:hidden;font-family:'JetBrains Mono',monospace;user-select:none;touch-action:none;overscroll-behavior:none}
 
-video{position:absolute;top:0;left:0;width:100vw;height:100dvh;object-fit:cover;z-index:0;opacity:0;transition:opacity .3s;transform:scaleX(-1)}
+video{position:absolute;top:max(52px,calc(env(safe-area-inset-top,14px) + 42px));left:max(14px,env(safe-area-inset-left,14px));width:140px;height:105px;object-fit:cover;z-index:15;opacity:0;transition:opacity .3s;transform:scaleX(-1);border-radius:6px;border:1px solid rgba(0,229,255,0.3);box-shadow:0 2px 12px rgba(0,0,0,0.6);pointer-events:none}
 video.cam-on{opacity:1}
-#three-canvas{position:absolute;top:0;left:0;width:100vw;height:100dvh;z-index:1;transition:opacity .3s}
-#three-canvas.cam-through{opacity:0.35}
+#three-canvas{position:absolute;top:0;left:0;width:100vw;height:100dvh;z-index:1}
 #game-canvas{position:absolute;top:0;left:0;width:100vw;height:100dvh;z-index:2;display:none}
 #hud-canvas{position:absolute;top:0;left:0;width:100vw;height:100dvh;z-index:3;pointer-events:none}
 
@@ -29,15 +28,6 @@ video.cam-on{opacity:1}
 .b-info{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.5);border:1px solid rgba(255,255,255,0.1)}
 .b-hands{background:rgba(0,200,255,0.1);color:#00c8ff;border:1px solid rgba(0,200,255,0.2)}
 .b-gesture{background:rgba(190,120,255,0.12);color:#be78ff;border:1px solid rgba(190,120,255,0.3);font-weight:700}
-
-/* ── Gesture Toast ── */
-#gestureToast{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;pointer-events:none;text-align:center;opacity:0;transition:opacity .2s}
-#gestureToast.visible{opacity:1}
-#gestureEmoji{font-size:52px;filter:drop-shadow(0 0 25px rgba(0,200,255,0.6));animation:gP .4s ease-out}
-#gestureName{font-size:20px;letter-spacing:5px;text-transform:uppercase;font-weight:900;font-family:'Orbitron',sans-serif;color:#00e5ff;text-shadow:0 0 30px rgba(0,229,255,0.7),0 0 60px rgba(0,229,255,0.3);animation:gS .3s ease-out}
-#gestureConf{font-size:9px;letter-spacing:3px;color:rgba(0,229,255,0.5);margin-top:4px;font-family:'Orbitron',sans-serif}
-@keyframes gP{0%{transform:scale(1.4);opacity:0}100%{transform:scale(1);opacity:1}}
-@keyframes gS{0%{transform:translateY(8px);opacity:0}100%{transform:translateY(0);opacity:1}}
 
 /* ── Top controls ── */
 #top-controls{position:absolute;top:max(14px,env(safe-area-inset-top,14px));right:max(14px,env(safe-area-inset-right,14px));z-index:20;display:flex;gap:5px}
@@ -58,7 +48,7 @@ video.cam-on{opacity:1}
 .cam-select option{background:#111;color:#fff}
 .ctrl-group{display:flex;align-items:center;gap:4px;font-size:8px;color:rgba(0,229,255,0.6);text-transform:uppercase}
 .ctrl-group input[type=range]{width:50px;height:3px;accent-color:#00e5ff;cursor:pointer}
-@media(max-width:600px){.btn{padding:4px 6px;font-size:7px}.panel{padding:4px 6px;gap:2px}.cam-select{max-width:90px;font-size:7px}#gestureEmoji{font-size:36px}#gestureName{font-size:14px;letter-spacing:3px}}
+@media(max-width:600px){.btn{padding:4px 6px;font-size:7px}.panel{padding:4px 6px;gap:2px}.cam-select{max-width:90px;font-size:7px}}
 </style>
 </head>
 <body>
@@ -67,8 +57,6 @@ video.cam-on{opacity:1}
 <canvas id="three-canvas"></canvas>
 <canvas id="game-canvas"></canvas>
 <canvas id="hud-canvas"></canvas>
-
-<div id="gestureToast"><div id="gestureEmoji"></div><div id="gestureName"></div><div id="gestureConf"></div></div>
 
 <div id="hud">
     <div class="hud-row"><div class="badge b-status loading" id="status">Init…</div><div class="badge b-info" id="fpsDisplay">-- fps</div></div>
@@ -93,6 +81,7 @@ video.cam-on{opacity:1}
         <button class="btn mode-btn active" id="btn-pond" onclick="setMode('pond','world')">Pond</button>
         <button class="btn mode-btn" id="btn-flow" onclick="setMode('flow','world')">Flow</button>
         <button class="btn mode-btn" id="btn-flow2" onclick="setMode('flow2','world')">Flow v2</button>
+        <button class="btn mode-btn" id="btn-smear" onclick="setMode('smear','world')">Smear</button>
         <button class="btn mode-btn" id="btn-earth" onclick="setMode('earth','world')">Earth</button>
         <button class="btn mode-btn" id="btn-nebula" onclick="setMode('nebula','world')">Nebula</button>
         <button class="btn mode-btn" id="btn-storm" onclick="setMode('storm','world')">Storm</button>
@@ -116,6 +105,7 @@ video.cam-on{opacity:1}
         <div class="divider" style="height:20px;background:rgba(0,229,255,0.2)"></div>
         <button class="btn active" id="btn-mirror" onclick="toggleMirror()">🪞 Flip</button>
         <button class="btn active" id="btn-holo" onclick="toggleHolo()">✨ Holo</button>
+        <button class="btn active" id="btn-skeleton" onclick="toggleSkeleton()">🦴 Skel</button>
     </div>
 </div>
 
@@ -132,61 +122,41 @@ gameCanvas.width=hudCanvas.width=W;gameCanvas.height=hudCanvas.height=H;
 
 let lastFrameTime=performance.now(),frameCount=0,time=0;
 let currentMode='pond',currentCategory='world',currentRes='low';
-let resMult=0.3,gameScore=0,camRotation=0,mirrorX=true,uiVisible=true,camView=false,holoEnabled=true;
+let resMult=0.3,gameScore=0,camRotation=0,mirrorX=true,uiVisible=true,camView=false,holoEnabled=true,skeletonEnabled=true;
 
 // Gesture state
 let gesture={count:0,fist:false,h1:null,h2:null,hands:[]};
 let s_scale=1,s_rotZ=0,s_rotX=0,s_rotY=0,s_fist=0;
 let dragOffsetX=0,dragOffsetY=0,isDragging=false;
+let zoomBaseDist=null,zoomBaseScale=1,wasTwoHands=false;
 
-// Per-hand smoothed positions + trails
+// Per-hand smoothed positions + trails (Updated with tip tracking interpolation)
+const TRACKING_SMOOTH_FACTOR = 0.35;
 const handSmooth=[
-    {x:0,y:0,tips:[],palmX:0,palmY:0,state:'none',prevState:'none',stateTime:0,scanT:0,trails:[[],[],[],[],[]]},
-    {x:0,y:0,tips:[],palmX:0,palmY:0,state:'none',prevState:'none',stateTime:0,scanT:0,trails:[[],[],[],[],[]]},
+    {x:0,y:0,tips:[{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}],palmX:0,palmY:0,state:'none',prevState:'none',stateTime:0,scanT:0,trails:[[],[],[],[],[]]},
+    {x:0,y:0,tips:[{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}],palmX:0,palmY:0,state:'none',prevState:'none',stateTime:0,scanT:0,trails:[[],[],[],[],[]]},
 ];
 const TRAIL_LEN=12;
-
-// Radial wheel
-let wheelActive=false,wheelHand=-1,wheelAngle=0,wheelSelected=-1,wheelOpacity=0;
-const MODE_LIST=[
-    {id:'pond',label:'Pond',cat:'world',color:'#00e5ff',emoji:'🌊'},
-    {id:'flow',label:'Flow',cat:'world',color:'#8b5cf6',emoji:'🌀'},
-    {id:'flow2',label:'Flow v2',cat:'world',color:'#a78bfa',emoji:'💫'},
-    {id:'earth',label:'Earth',cat:'world',color:'#22c55e',emoji:'🌍'},
-    {id:'nebula',label:'Nebula',cat:'world',color:'#c084fc',emoji:'🌌'},
-    {id:'storm',label:'Storm',cat:'world',color:'#06b6d4',emoji:'⚡'},
-    {id:'shatter',label:'Shatter',cat:'world',color:'#f472b6',emoji:'💥'},
-    {id:'alien',label:'Alien',cat:'world',color:'#ef4444',emoji:'👾'},
-    {id:'bubbles',label:'Bubbles',cat:'game',color:'#50fa7b',emoji:'🫧'},
-    {id:'fruits',label:'Fruits',cat:'game',color:'#fbbf24',emoji:'🍉'},
-];
 
 let toastTimer=null;
 const processCanvas=document.createElement('canvas');const processCtx=processCanvas.getContext('2d',{willReadFrequently:true});
 
 // ═══════════════════════════════════════════════════
-//  GESTURE CLASSIFICATION (improved accuracy)
+//  GESTURE CLASSIFICATION
 // ═══════════════════════════════════════════════════
 function dist3(a,b){return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2+((a.z||0)-(b.z||0))**2)}
-
 function isFingerExtended(lm,finger){
     const map={thumb:[1,2,3,4],index:[5,6,7,8],middle:[9,10,11,12],ring:[13,14,15,16],pinky:[17,18,19,20]};
     const[mcp,pip,dip,tip]=map[finger].map(i=>lm[i]);
     if(finger==='thumb'){
-        // Thumb: use cross-hand distance — tip should be far from index MCP
         const indexMcp=lm[5];
         return dist3(tip,indexMcp)>dist3(pip,indexMcp)*1.2;
     }
-    // Improved: check tip is further from MCP than PIP AND tip is above PIP (uncurled)
     const tipToMcp=dist3(tip,mcp);
     const pipToMcp=dist3(pip,mcp);
     const tipToPalm=dist3(tip,lm[0]);
-    const pipToPalm=dist3(pip,lm[0]);
-    // Finger is extended if tip is significantly further from MCP than PIP
-    // AND tip is further from palm center than DIP (not curled back)
     return tipToMcp>pipToMcp*1.5 && tipToPalm>dist3(dip,lm[0])*0.9;
 }
-
 function isCurled(lm,finger){
     const map={index:[5,6,7,8],middle:[9,10,11,12],ring:[13,14,15,16],pinky:[17,18,19,20]};
     const[mcp,pip,dip,tip]=map[finger].map(i=>lm[i]);
@@ -194,7 +164,6 @@ function isCurled(lm,finger){
     const pipToMcp=dist3(pip,mcp);
     return tipToMcp<pipToMcp*1.3;
 }
-
 function classifyHand(lm){
     const thumb=isFingerExtended(lm,'thumb');
     const index=isFingerExtended(lm,'index');
@@ -203,34 +172,15 @@ function classifyHand(lm){
     const pinky=isFingerExtended(lm,'pinky');
     const ringCurled=isCurled(lm,'ring');
     const pinkyCurled=isCurled(lm,'pinky');
-
-    // Peace: index+middle extended, ring+pinky CURLED (strict)
     if(index&&middle&&ringCurled&&pinkyCurled) return 'peace';
-    // Point: only index extended, others curled
     if(index&&!middle&&ringCurled&&pinkyCurled) return 'point';
-    // Fist: nothing extended (or only thumb)
     const extCount=[index,middle,ring,pinky].filter(Boolean).length;
     if(extCount===0) return 'fist';
-    // Palm: 4+ fingers extended
     if(extCount>=3&&(index&&middle)) return 'palm';
-    // Default
     return 'palm';
 }
 
-// ═══════════════════════════════════════════════════
-//  GESTURE TOAST
-// ═══════════════════════════════════════════════════
-const GESTURE_META={palm:{emoji:'🖐️',label:'ROTATE',color:'#00e5ff'},fist:{emoji:'✊',label:'GRAB',color:'#ff6b6b'},point:{emoji:'☝️',label:'AIM',color:'#fbbf24'},peace:{emoji:'✌️',label:'SELECT',color:'#be78ff'}};
-function showToast(state){
-    const m=GESTURE_META[state];if(!m)return;
-    const t=document.getElementById('gestureToast');
-    document.getElementById('gestureEmoji').textContent=m.emoji;
-    const n=document.getElementById('gestureName');n.textContent=m.label;n.style.color=m.color;
-    document.getElementById('gestureConf').textContent='ENGAGED';
-    t.classList.add('visible');n.style.animation='none';n.offsetHeight;n.style.animation='';
-    document.getElementById('gestureEmoji').style.animation='none';document.getElementById('gestureEmoji').offsetHeight;document.getElementById('gestureEmoji').style.animation='';
-    clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('visible'),900);
-}
+const GESTURE_META={palm:{emoji:'🖐️',label:'OPEN',color:'#00e5ff'},fist:{emoji:'✊',label:'FIST',color:'#ff6b6b'},point:{emoji:'☝️',label:'AIM',color:'#fbbf24'},peace:{emoji:'✌️',label:'PEACE',color:'#be78ff'}};
 
 // ═══════════════════════════════════════════════════
 //  IRON MAN HOLOGRAPHIC OVERLAY
@@ -245,7 +195,6 @@ function drawHolo(){
         if(!h||!h.lm)continue;
         const lm=h.lm;
 
-        // Smooth positions
         const lerp=0.3;
         const palmCenter={x:(lm[0].x+lm[5].x+lm[9].x+lm[13].x+lm[17].x)/5,y:(lm[0].y+lm[5].y+lm[9].y+lm[13].y+lm[17].y)/5};
         let px=mirrorX?(1-palmCenter.x)*W:palmCenter.x*W;
@@ -253,13 +202,11 @@ function drawHolo(){
         sm.palmX+=(px-sm.palmX)*lerp;sm.palmY+=(py-sm.palmY)*lerp;
         px=sm.palmX;py=sm.palmY;
 
-        // Fingertip positions (screen space)
         const tips=[4,8,12,16,20].map(i=>{
             let x=mirrorX?(1-lm[i].x)*W:lm[i].x*W;
             return{x,y:lm[i].y*H};
         });
 
-        // Update trails
         for(let ti=0;ti<5;ti++){
             sm.trails[ti].unshift({x:tips[ti].x,y:tips[ti].y});
             if(sm.trails[ti].length>TRAIL_LEN)sm.trails[ti].pop();
@@ -270,7 +217,6 @@ function drawHolo(){
         const baseColor=meta.color;
         const t=time;
 
-        // ── SCAN LINE (on first detect) ──
         if(sm.scanT<1){
             sm.scanT+=0.03;
             const scanY=py-80+sm.scanT*160;
@@ -283,7 +229,6 @@ function drawHolo(){
             hCtx.beginPath();hCtx.moveTo(px-100,scanY);hCtx.lineTo(px+100,scanY);hCtx.stroke();
         }
 
-        // ── REPULSOR GLOW (palm center) ──
         const glowSize=state==='palm'?55:state==='fist'?20:35;
         const glowAlpha=state==='palm'?0.25:state==='fist'?0.4:0.15;
         const grad=hCtx.createRadialGradient(px,py,0,px,py,glowSize);
@@ -292,13 +237,11 @@ function drawHolo(){
         grad.addColorStop(1,'transparent');
         hCtx.fillStyle=grad;hCtx.beginPath();hCtx.arc(px,py,glowSize,0,Math.PI*2);hCtx.fill();
 
-        // Inner bright core
         const core=hCtx.createRadialGradient(px,py,0,px,py,8);
         core.addColorStop(0,`rgba(255,255,255,${glowAlpha*1.5})`);
         core.addColorStop(1,'transparent');
         hCtx.fillStyle=core;hCtx.beginPath();hCtx.arc(px,py,8,0,Math.PI*2);hCtx.fill();
 
-        // ── ROTATING ARC RINGS ──
         for(let ring=0;ring<3;ring++){
             const r=30+ring*18;
             const speed=(ring%2===0?1:-1)*(0.8+ring*0.3);
@@ -310,8 +253,8 @@ function drawHolo(){
             hCtx.beginPath();hCtx.arc(px,py,r,startAngle+Math.PI,startAngle+Math.PI+arcLen*0.7);hCtx.stroke();
         }
 
-        // ── FINGERTIP WIREFRAME POLYGON ──
         if(state==='palm'||state==='peace'){
+            if(skeletonEnabled){
             hCtx.strokeStyle='rgba(0,229,255,0.2)';hCtx.lineWidth=1;
             hCtx.beginPath();
             for(let ti=0;ti<5;ti++){
@@ -320,32 +263,30 @@ function drawHolo(){
             }
             hCtx.closePath();hCtx.stroke();
 
-            // Lines from palm center to each tip
             hCtx.strokeStyle='rgba(0,229,255,0.1)';
             for(let ti=0;ti<5;ti++){
                 hCtx.beginPath();hCtx.moveTo(px,py);hCtx.lineTo(tips[ti].x,tips[ti].y);hCtx.stroke();
             }
+            }
         }
 
-        // ── FINGERTIP DOTS + TRAILS ──
         for(let ti=0;ti<5;ti++){
             const trail=sm.trails[ti];
-            // Trail line
-            if(trail.length>2){
+            if(skeletonEnabled&&trail.length>2){
                 hCtx.beginPath();hCtx.moveTo(trail[0].x,trail[0].y);
                 for(let j=1;j<trail.length;j++){
                     hCtx.lineTo(trail[j].x,trail[j].y);
                 }
                 hCtx.strokeStyle=`rgba(0,229,255,0.15)`;hCtx.lineWidth=1.5;hCtx.stroke();
             }
-            // Tip dot
+            if(skeletonEnabled){
             const tipGlow=hCtx.createRadialGradient(tips[ti].x,tips[ti].y,0,tips[ti].x,tips[ti].y,10);
             tipGlow.addColorStop(0,'rgba(0,229,255,0.6)');tipGlow.addColorStop(1,'transparent');
             hCtx.fillStyle=tipGlow;hCtx.beginPath();hCtx.arc(tips[ti].x,tips[ti].y,10,0,Math.PI*2);hCtx.fill();
             hCtx.fillStyle='rgba(255,255,255,0.8)';hCtx.beginPath();hCtx.arc(tips[ti].x,tips[ti].y,2.5,0,Math.PI*2);hCtx.fill();
+            }
         }
 
-        // ── WRIST DATA READOUT ──
         let wx=mirrorX?(1-lm[0].x)*W:lm[0].x*W;
         let wy=lm[0].y*H+25;
         hCtx.font='9px Orbitron';hCtx.fillStyle=`rgba(0,229,255,0.5)`;
@@ -354,14 +295,12 @@ function drawHolo(){
         hCtx.font='7px JetBrains Mono';hCtx.fillStyle='rgba(0,229,255,0.25)';
         hCtx.fillText(`${(mirrorX?1-lm[9].x:lm[9].x).toFixed(2)}, ${lm[9].y.toFixed(2)}`,wx,wy+12);
 
-        // ── FIST GRAB INDICATOR ──
         if(state==='fist'){
             hCtx.strokeStyle='rgba(255,100,100,0.3)';hCtx.lineWidth=2;hCtx.setLineDash([4,4]);
             hCtx.beginPath();hCtx.arc(px,py,25+Math.sin(t*4)*5,0,Math.PI*2);hCtx.stroke();
             hCtx.setLineDash([]);
         }
 
-        // ── POINT LASER ──
         if(state==='point'){
             const tipX=tips[1].x,tipY=tips[1].y;
             const angle=Math.atan2(tipY-py,tipX-px);
@@ -375,61 +314,6 @@ function drawHolo(){
             hCtx.beginPath();hCtx.moveTo(tipX,tipY);hCtx.lineTo(endX,endY);hCtx.stroke();
         }
     }
-
-    // ── RADIAL MODE WHEEL ──
-    if(wheelOpacity>0.01){
-        const whi=wheelHand>=0&&gesture.hands[wheelHand]?wheelHand:0;
-        const wh=handSmooth[whi];
-        const cx=wh.palmX,cy=wh.palmY;
-        const radius=100;
-        const count=MODE_LIST.length;
-        const angleStep=Math.PI*2/count;
-
-        hCtx.globalAlpha=wheelOpacity;
-
-        // Background ring
-        hCtx.strokeStyle='rgba(0,229,255,0.15)';hCtx.lineWidth=40;
-        hCtx.beginPath();hCtx.arc(cx,cy,radius,0,Math.PI*2);hCtx.stroke();
-
-        for(let i=0;i<count;i++){
-            const a=-Math.PI/2+i*angleStep;
-            const mx=cx+Math.cos(a)*radius,my=cy+Math.sin(a)*radius;
-            const isSelected=i===wheelSelected;
-            const isCurrent=MODE_LIST[i].id===currentMode;
-
-            // Segment highlight
-            if(isSelected){
-                const segGrad=hCtx.createRadialGradient(mx,my,0,mx,my,30);
-                segGrad.addColorStop(0,MODE_LIST[i].color+'80');
-                segGrad.addColorStop(1,'transparent');
-                hCtx.fillStyle=segGrad;hCtx.beginPath();hCtx.arc(mx,my,30,0,Math.PI*2);hCtx.fill();
-            }
-
-            // Icon
-            hCtx.font=isSelected?'22px Arial':'16px Arial';
-            hCtx.textAlign='center';hCtx.textBaseline='middle';
-            hCtx.fillText(MODE_LIST[i].emoji,mx,my);
-
-            // Label
-            hCtx.font=`${isSelected?'bold ':''}8px Orbitron`;
-            hCtx.fillStyle=isSelected?MODE_LIST[i].color:'rgba(255,255,255,0.5)';
-            hCtx.fillText(MODE_LIST[i].label,mx,my+18);
-
-            // Current mode indicator
-            if(isCurrent){
-                hCtx.strokeStyle=MODE_LIST[i].color;hCtx.lineWidth=1.5;
-                hCtx.beginPath();hCtx.arc(mx,my,22,0,Math.PI*2);hCtx.stroke();
-            }
-        }
-
-        // Center text
-        if(wheelSelected>=0){
-            hCtx.font='bold 11px Orbitron';hCtx.fillStyle='#fff';hCtx.textAlign='center';hCtx.textBaseline='middle';
-            hCtx.fillText(MODE_LIST[wheelSelected].label.toUpperCase(),cx,cy);
-        }
-
-        hCtx.globalAlpha=1;
-    }
 }
 
 // ═══════════════════════════════════════════════════
@@ -439,14 +323,18 @@ window.toggleUI=function(){uiVisible=!uiVisible;const u=document.getElementById(
 window.toggleFS=function(){if(!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>{});else if(document.exitFullscreen)document.exitFullscreen()};
 window.toggleCamRotation=function(){camRotation=(camRotation+90)%360;document.getElementById('phone-icon').style.transform=`rotate(${camRotation}deg)`;document.getElementById('cam-deg').innerText=`${camRotation}°`};
 window.toggleMirror=function(){mirrorX=!mirrorX;const b=document.getElementById('btn-mirror');b.classList.toggle('active',mirrorX);videoElement.style.transform=mirrorX?'scaleX(-1)':'none'};
-window.toggleCamView=function(){camView=!camView;videoElement.classList.toggle('cam-on',camView);threeCanvas.classList.toggle('cam-through',camView);const b=document.getElementById('btn-cam-view');b.style.color=camView?'#00e5ff':'rgba(255,255,255,0.5)';if(activeWorld){renderer.setClearAlpha(camView?0:1)}};
+window.toggleCamView=function(){camView=!camView;videoElement.classList.toggle('cam-on',camView);const b=document.getElementById('btn-cam-view');b.style.color=camView?'#00e5ff':'rgba(255,255,255,0.5)'};
 window.toggleHolo=function(){holoEnabled=!holoEnabled;const b=document.getElementById('btn-holo');b.classList.toggle('active',holoEnabled)};
+window.toggleSkeleton=function(){skeletonEnabled=!skeletonEnabled;const b=document.getElementById('btn-skeleton');b.classList.toggle('active',skeletonEnabled)};
 
 // ═══════════════════════════════════════════════════
-//  MATH HELPERS
+//  MATH HELPERS & GLSL
 // ═══════════════════════════════════════════════════
 function hsl(h,s,l){h=((h%1)+1)%1;var a=s*Math.min(l,1-l);function f(n){var k=(n+h*12)%12;return l-a*Math.max(-1,Math.min(k-3,9-k,1))}return[f(0),f(8),f(4)]}
 function n3(x,y,z){var X=Math.floor(x),Y=Math.floor(y),Z=Math.floor(z),fx=x-X,fy=y-Y,fz=z-Z;function h(a,b,c){var v=(a*374761393+b*668265263+c*1274126177)^(a>>>13);v=(v^(v>>>16))*0x45d9f3b;return((v^(v>>>16))&0xfff)/0xfff-.5}function L(a,b,t){return a+(b-a)*t*t*(3-2*t)}return L(L(L(h(X,Y,Z),h(X+1,Y,Z),fx),L(h(X,Y+1,Z),h(X+1,Y+1,Z),fx),fy),L(L(h(X,Y,Z+1),h(X+1,Y,Z+1),fx),L(h(X,Y+1,Z+1),h(X+1,Y+1,Z+1),fx),fy),fz)}
+
+const GLSL_NOISE=`vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x,289.0);}vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}float snoise(vec3 v){const vec2 C=vec2(1.0/6.0,1.0/3.0);const vec4 D=vec4(0,0.5,1,2);vec3 i=floor(v+dot(v,C.yyy));vec3 x0=v-i+dot(i,C.xxx);vec3 g=step(x0.yzx,x0.xyz);vec3 l=1.0-g;vec3 i1=min(g.xyz,l.zxy);vec3 i2=max(g.xyz,l.zxy);vec3 x1=x0-i1+C.xxx;vec3 x2=x0-i2+2.0*C.xxx;vec3 x3=x0-1.0+3.0*C.xxx;i=mod(i,289.0);vec4 p=permute(permute(permute(i.z+vec4(0,i1.z,i2.z,1))+i.y+vec4(0,i1.y,i2.y,1))+i.x+vec4(0,i1.x,i2.x,1));float n_=1.0/7.0;vec3 ns=n_*D.wyz-D.xzx;vec4 j=p-49.0*floor(p*ns.z*ns.z);vec4 x_=floor(j*ns.z);vec4 y_=floor(j-7.0*x_);vec4 x=x_*ns.x+ns.yyyy;vec4 y=y_*ns.x+ns.yyyy;vec4 h=1.0-abs(x)-abs(y);vec4 b0=vec4(x.xy,y.xy);vec4 b1=vec4(x.zw,y.zw);vec4 s0=floor(b0)*2.0+1.0;vec4 s1=floor(b1)*2.0+1.0;vec4 sh=-step(h,vec4(0));vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;vec3 p0=vec3(a0.xy,h.x);vec3 p1=vec3(a0.zw,h.y);vec3 p2=vec3(a1.xy,h.z);vec3 p3=vec3(a1.zw,h.w);vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0);m=m*m;return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));}`;
+const GLSL_CURL=GLSL_NOISE+`vec3 snoise3(vec3 x){return vec3(snoise(x),snoise(vec3(x.y-19.1,x.z+33.4,x.x+47.2)),snoise(vec3(x.z+74.2,x.x-124.5,x.y+99.4)));}vec3 curlNoise(vec3 p){const float e=0.1;vec3 dx=vec3(e,0,0),dy=vec3(0,e,0),dz=vec3(0,0,e);vec3 px0=snoise3(p-dx),px1=snoise3(p+dx);vec3 py0=snoise3(p-dy),py1=snoise3(p+dy);vec3 pz0=snoise3(p-dz),pz1=snoise3(p+dz);return normalize(vec3(py1.z-py0.z-pz1.y+pz0.y,pz1.x-pz0.x-px1.z+px0.z,px1.y-px0.y-py1.x+py0.x)*(1.0/(2.0*e)));}`;
 
 // ═══════════════════════════════════════════════════
 //  THREE.JS SETUP
@@ -464,16 +352,6 @@ function syncOrbit(){var d=camera.position.clone().sub(orbitTarget);orbit.radius
 var rayP=new THREE.Plane(new THREE.Vector3(0,1,0),0),rc=new THREE.Raycaster(),ip=new THREE.Vector3();
 function s2w(cx,cy){rc.setFromCamera({x:(cx/W)*2-1,y:-(cy/H)*2+1},camera);if(rc.ray.intersectPlane(rayP,ip))return{x:ip.x,z:ip.z,hit:true};return{x:0,z:0,hit:false}}
 let activeWorld=null;
-
-// ═══════════════════════════════════════════════════
-//  GLSL
-// ═══════════════════════════════════════════════════
-const GLSL_NOISE=`
-vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x,289.0);}vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
-float snoise(vec3 v){const vec2 C=vec2(1.0/6.0,1.0/3.0);const vec4 D=vec4(0,0.5,1,2);vec3 i=floor(v+dot(v,C.yyy));vec3 x0=v-i+dot(i,C.xxx);vec3 g=step(x0.yzx,x0.xyz);vec3 l=1.0-g;vec3 i1=min(g.xyz,l.zxy);vec3 i2=max(g.xyz,l.zxy);vec3 x1=x0-i1+C.xxx;vec3 x2=x0-i2+2.0*C.xxx;vec3 x3=x0-1.0+3.0*C.xxx;i=mod(i,289.0);vec4 p=permute(permute(permute(i.z+vec4(0,i1.z,i2.z,1))+i.y+vec4(0,i1.y,i2.y,1))+i.x+vec4(0,i1.x,i2.x,1));float n_=1.0/7.0;vec3 ns=n_*D.wyz-D.xzx;vec4 j=p-49.0*floor(p*ns.z*ns.z);vec4 x_=floor(j*ns.z);vec4 y_=floor(j-7.0*x_);vec4 x=x_*ns.x+ns.yyyy;vec4 y=y_*ns.x+ns.yyyy;vec4 h=1.0-abs(x)-abs(y);vec4 b0=vec4(x.xy,y.xy);vec4 b1=vec4(x.zw,y.zw);vec4 s0=floor(b0)*2.0+1.0;vec4 s1=floor(b1)*2.0+1.0;vec4 sh=-step(h,vec4(0));vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;vec3 p0=vec3(a0.xy,h.x);vec3 p1=vec3(a0.zw,h.y);vec3 p2=vec3(a1.xy,h.z);vec3 p3=vec3(a1.zw,h.w);vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0);m=m*m;return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));}`;
-const GLSL_CURL=GLSL_NOISE+`
-vec3 snoise3(vec3 x){return vec3(snoise(x),snoise(vec3(x.y-19.1,x.z+33.4,x.x+47.2)),snoise(vec3(x.z+74.2,x.x-124.5,x.y+99.4)));}
-vec3 curlNoise(vec3 p){const float e=0.1;vec3 dx=vec3(e,0,0),dy=vec3(0,e,0),dz=vec3(0,0,e);vec3 px0=snoise3(p-dx),px1=snoise3(p+dx);vec3 py0=snoise3(p-dy),py1=snoise3(p+dy);vec3 pz0=snoise3(p-dz),pz1=snoise3(p+dz);return normalize(vec3(py1.z-py0.z-pz1.y+pz0.y,pz1.x-pz0.x-px1.z+px0.z,px1.y-px0.y-py1.x+py0.x)*(1.0/(2.0*e)));}`;
 
 // ═══════════════════════════════════════════════════
 //  WORLDS
@@ -522,7 +400,6 @@ flow(){
     return{m:[pts],dc(){camera.position.set(0,35,25);camera.lookAt(0,0,0);orbitTarget.set(0,0,0);syncOrbit()},bg:[.015,.015,.02],
     up(dt){mat.uniforms.uTime.value=time;var rM=parseFloat(document.getElementById('s-rad')?.value||1),fM=parseFloat(document.getElementById('s-frc')?.value||1),sM=parseFloat(document.getElementById('s-int')?.value||1),rtM=parseFloat(document.getElementById('s-rot')?.value||1);
     mat.uniforms.uRepelRadius.value=6*rM;mat.uniforms.uRepelForce.value=1.5*fM;mat.uniforms.uFlowSpeed.value=.15*sM;
-    worldGroup.rotation.y+=.003*rtM;worldGroup.rotation.x+=.0015*rtM;worldGroup.rotation.z+=.0005*rtM;
     mat.uniforms.uMouseActive.value+=(ia-mat.uniforms.uMouseActive.value)*.2;mat.uniforms.uMousePos.value.lerp(ap,.2);ia=0},
     pm(wx,wz){ap.set(wx,0,wz);ia=1}}
 },
@@ -542,7 +419,6 @@ flow2(){
     return{m:[pts],dc(){camera.position.set(0,35,25);camera.lookAt(0,0,0);orbitTarget.set(0,0,0);syncOrbit()},bg:[.015,.015,.02],
     up(dt){mat.uniforms.uTime.value=time;var rM=parseFloat(document.getElementById('s-rad')?.value||1),fM=parseFloat(document.getElementById('s-frc')?.value||1),sM=parseFloat(document.getElementById('s-int')?.value||1),rtM=parseFloat(document.getElementById('s-rot')?.value||1);
     mat.uniforms.uRepelRadius.value=6*rM;mat.uniforms.uRepelForce.value=1.5*fM;mat.uniforms.uFlowSpeed.value=.15*sM;
-    worldGroup.rotation.y+=.003*rtM;worldGroup.rotation.x+=.0015*rtM;worldGroup.rotation.z+=.0005*rtM;
     mat.uniforms.uMouseActive.value+=(ia-mat.uniforms.uMouseActive.value)*.2;mat.uniforms.uMousePos.value.lerp(ap,.2);ia=0;
     let hc=(gesture.count===2&&gesture.zoom<.25);cb+=(hc?1:0-cb)*.08;mat.uniforms.uContract.value=cb},
     pm(wx,wz){ap.set(wx,0,wz);ia=1}}
@@ -606,7 +482,103 @@ shatter(){
     ps[i*3]=x;ps[i*3+1]=y;ps[i*3+2]=z;var dp=Math.sqrt((x-hx)*(x-hx)+y*y+(z-hz)*(z-hz)),sp=Math.sqrt(vs[i*3]*vs[i*3]+vs[i*3+1]*vs[i*3+1]),rgb=hsl(.6+hO-dp*.02+sp*.05,.3+Math.min(.5,dp*.05),Math.min(.6,.08+sp*.4+dp*.03));col.setXYZ(i,rgb[0],rgb[1],rgb[2])}pos.needsUpdate=true;col.needsUpdate=true;
     for(var j=0;j<imp.length;j++){imp[j].age+=dt;imp[j].s*=.96;imp[j].r+=dt*8}for(var j=imp.length-1;j>=0;j--){if(imp[j].s<.02||imp[j].age>4)imp.splice(j,1)}},
     pm(wx,wz,str){imp.push({x:wx,z:wz,s:str*1.5,r:.5,age:0})}}
-}};
+},
+smear(){
+    var N = currentRes==='low' ? 18000 : currentRes==='high' ? 45000 : 28000;
+    var FLOOR=-14,CEIL=16,WW=26,CAMZ=38;
+    var pos=new Float32Array(N*3),vel=new Float32Array(N*2),hueArr=new Float32Array(N),szArr=new Float32Array(N);
+
+    // Pre-baked noise table — no closures inside loop
+    var NTAB=512,noiseTable=new Float32Array(NTAB);
+    for(var k=0;k<NTAB;k++) noiseTable[k]=Math.random()*2-1;
+    function vnoise(x,y){return noiseTable[(((x*1619+0.5|0)*1619+(y*5.1+0.5|0)*31337)&0x7fffffff)%NTAB];}
+
+    function spawnAt(i,spread){
+        pos[i*3]=(Math.random()*2-1)*WW*0.95;
+        pos[i*3+1]=spread?FLOOR+Math.random()*(CEIL-FLOOR):CEIL+Math.random()*3;
+        pos[i*3+2]=(Math.random()-0.5)*0.3;
+        vel[i*2]=(Math.random()-0.5)*0.8;
+        vel[i*2+1]=-(1+Math.random()*2);
+        hueArr[i]=Math.random();szArr[i]=0.4+Math.random()*0.6;
+    }
+    for(var i=0;i<N;i++) spawnAt(i,true);
+
+    var geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+    geo.setAttribute('aHue',new THREE.BufferAttribute(hueArr,1));
+    geo.setAttribute('aSize',new THREE.BufferAttribute(szArr,1));
+
+    var mat=new THREE.ShaderMaterial({
+        uniforms:{uFloor:{value:FLOOR},uCeil:{value:CEIL}},
+        vertexShader:`
+            attribute float aHue;
+            attribute float aSize;
+            uniform float uFloor;
+            uniform float uCeil;
+            varying float vLife;
+            varying float vHue;
+            void main(){
+                vHue=aHue;
+                vLife=clamp((position.y-uFloor)/(uCeil-uFloor),0.0,1.0);
+                vec4 mv=modelViewMatrix*vec4(position,1.0);
+                gl_Position=projectionMatrix*mv;
+                gl_PointSize=clamp(aSize*2.0*(55.0/-mv.z),0.5,3.5);
+            }`,
+        fragmentShader:`
+            varying float vLife;
+            varying float vHue;
+            vec3 hsv2rgb(float h,float s,float v){
+                vec3 p=abs(fract(vec3(h)+vec3(0,2,1)/3.0)*6.0-3.0);
+                return v*mix(vec3(1),clamp(p-1.0,0.0,1.0),s);
+            }
+            void main(){
+                vec2 uv=gl_PointCoord-0.5;
+                float d=dot(uv,uv)*4.0;
+                if(d>1.0)discard;
+                float h=0.57-vLife*0.04+vHue*0.06;
+                float s=0.8-vLife*0.5;
+                float v=0.4+vLife*0.65;
+                gl_FragColor=vec4(hsv2rgb(h,s,v),(1.0-d)*(0.4+vLife*0.5));
+            }`,
+        transparent:true,depthWrite:false,blending:THREE.AdditiveBlending
+    });
+
+    var pts=new THREE.Points(geo,mat);
+    worldGroup.add(pts);
+    var imp=[];
+
+    return{
+        m:[pts],
+        dc(){camera.position.set(0,1,CAMZ);camera.lookAt(0,0,0);orbitTarget.set(0,0,0);syncOrbit();},
+        bg:[0,0.008,0.025],
+        up(dt){
+            var p=geo.attributes.position.array,t=time*0.35,il=imp.length;
+            for(var i=0;i<N;i++){
+                var i3=i*3,i2=i*2,x=p[i3],y=p[i3+1],vx=vel[i2],vy=vel[i2+1];
+                vy-=16*dt;
+                vx+=vnoise(x*0.1+t,y*0.08)*3.5*dt;
+                for(var j=0;j<il;j++){
+                    var dx=x-imp[j].x,dy=y-imp[j].y,d2=dx*dx+dy*dy,r=imp[j].r;
+                    if(d2<r*r&&d2>0.01){var d=Math.sqrt(d2),f=(r-d)/r*imp[j].s;vx+=dx/d*f;vy+=dy/d*f;}
+                }
+                vx*=0.97;vy*=0.998;
+                x+=vx*dt;y+=vy*dt;
+                if(y<FLOOR){
+                    if(Math.random()<0.12){spawnAt(i,false);continue;}
+                    vy=Math.abs(vy)*0.12+Math.random()*1.5;vx+=(Math.random()-0.5)*2;y=FLOOR;
+                }
+                if(x<-WW){x=-WW;vx=Math.abs(vx)*0.3;}
+                if(x>WW){x=WW;vx=-Math.abs(vx)*0.3;}
+                p[i3]=x;p[i3+1]=y;vel[i2]=vx;vel[i2+1]=vy;
+            }
+            geo.attributes.position.needsUpdate=true;
+            for(var j=imp.length-1;j>=0;j--){imp[j].s*=0.87;imp[j].r+=dt*4;if(imp[j].s<0.05)imp.splice(j,1);}
+        },
+        pm(){},
+        pmXY(wx,wy){imp.push({x:wx,y:wy,s:6,r:4.5});}
+    };
+}
+};
 
 // ═══════════════════════════════════════════════════
 //  GAMES
@@ -630,7 +602,7 @@ window.setMode=function(mode,cat){
         threeCanvas.style.display='block';gameCanvas.style.display='none';document.getElementById('game-ui').style.display='none';
         while(worldGroup.children.length)worldGroup.remove(worldGroup.children[0]);
         s_scale=1;s_rotZ=0;s_rotX=0;s_rotY=0;worldGroup.scale.set(1,1,1);worldGroup.rotation.set(0,0,0);
-        activeWorld=Worlds[mode]();activeWorld.dc();let bg=activeWorld.bg;renderer.setClearColor(new THREE.Color(bg[0],bg[1],bg[2]),camView?0:1);
+        activeWorld=Worlds[mode]();activeWorld.dc();let bg=activeWorld.bg;renderer.setClearColor(new THREE.Color(bg[0],bg[1],bg[2]),1);
     }else{
         threeCanvas.style.display='none';gameCanvas.style.display='block';
         if(uiVisible)document.getElementById('game-ui').style.display='block';
@@ -650,7 +622,12 @@ function onResults(results){
     if(hc===0){
         statusEl.textContent='Searching…';statusEl.className='badge b-status loading';
         gestureHudEl.textContent='—';
-        for(let i=0;i<2;i++){handSmooth[i].state='none';handSmooth[i].scanT=0;handSmooth[i].trails=[[],[],[],[],[]]}
+        for(let i=0;i<2;i++){
+            handSmooth[i].state='none';
+            handSmooth[i].scanT=0;
+            handSmooth[i].trails=[[],[],[],[],[]];
+            handSmooth[i].tips=[{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}]; 
+        }
         return;
     }
 
@@ -659,7 +636,6 @@ function onResults(results){
 
     for(let i=0;i<hc;i++){
         const lm=results.multiHandLandmarks[i];
-        // FIX: Swap labels when mirrored (MediaPipe labels from camera perspective)
         let rawLabel=results.multiHandedness[i].label;
         let label=mirrorX?(rawLabel==='Left'?'Right':'Left'):rawLabel;
 
@@ -679,56 +655,21 @@ function onResults(results){
             gesture.midX=(gesture.h1.x+gesture.h2.x)/2;gesture.midY=(gesture.h1.y+gesture.h2.y)/2;
         }
 
-        // State transition detection for toast
         const sm=handSmooth[i];
         if(state!==sm.state){
             sm.prevState=sm.state;sm.state=state;sm.stateTime=0;
-            if(state!=='none')sm.scanT=0; // reset scan on new state
+            if(state!=='none')sm.scanT=0; 
         }else{sm.stateTime+=33}
-        if(sm.stateTime>250&&sm.stateTime<300&&state!=='none'){showToast(state)}
     }
 
-    // Reset unused hand slots
-    for(let i=hc;i<2;i++){handSmooth[i].state='none';handSmooth[i].trails=[[],[],[],[],[]]}
+    for(let i=hc;i<2;i++){
+        handSmooth[i].state='none';
+        handSmooth[i].trails=[[],[],[],[],[]];
+        handSmooth[i].tips=[{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}]; 
+    }
 
-    // HUD gesture label
     const labels=gesture.hands.filter(h=>h.state!=='none').map(h=>{const m=GESTURE_META[h.state]||{};return `${m.emoji||''} ${m.label||h.state}`});
     gestureHudEl.textContent=labels.join(' | ')||'—';
-
-    // ── RADIAL WHEEL LOGIC ──
-    const peaceHand=gesture.hands.findIndex(h=>h.state==='peace');
-    const otherHand=gesture.hands.findIndex((h,i)=>i!==peaceHand);
-
-    if(peaceHand>=0){
-        if(!wheelActive){wheelActive=true;wheelHand=peaceHand}
-        wheelOpacity+=(1-wheelOpacity)*.12;
-
-        // Use the OTHER hand (or same hand if only one) to select
-        const selector=otherHand>=0?gesture.hands[otherHand]:gesture.hands[peaceHand];
-        const sm=handSmooth[wheelHand>=0?wheelHand:0];
-        const dx=selector.x*W-sm.palmX,dy=selector.y*H-sm.palmY;
-        const dist=Math.sqrt(dx*dx+dy*dy);
-        if(dist>40){
-            const angle=Math.atan2(dy,dx)+Math.PI/2; // -PI/2 offset so top=0
-            let norm=((angle%(Math.PI*2))+(Math.PI*2))%(Math.PI*2);
-            wheelSelected=Math.floor(norm/(Math.PI*2)*MODE_LIST.length)%MODE_LIST.length;
-        }
-
-        // Fist on other hand = confirm selection
-        if(otherHand>=0&&gesture.hands[otherHand].state==='fist'&&wheelSelected>=0){
-            const sel=MODE_LIST[wheelSelected];
-            setMode(sel.id,sel.cat);
-            wheelActive=false;wheelOpacity=0;
-        }
-    }else{
-        if(wheelActive&&wheelSelected>=0){
-            // Peace released — confirm whatever was selected
-            const sel=MODE_LIST[wheelSelected];
-            setMode(sel.id,sel.cat);
-        }
-        wheelActive=false;wheelOpacity+=(0-wheelOpacity)*.15;
-        if(wheelOpacity<0.01)wheelSelected=-1;
-    }
 }
 
 // ═══════════════════════════════════════════════════
@@ -740,57 +681,88 @@ function animate(){
     lastFrameTime=now;time+=dt;
     frameCount++;if(frameCount%30===0)fpsEl.textContent=Math.round(1/dt)+' fps';
 
-    // ── IRON MAN CONTROLS ──
-    if(currentCategory==='world'&&activeWorld&&!wheelActive){
+    if(currentCategory==='world'&&activeWorld){
         let tScale=s_scale,tRotZ=s_rotZ,tRotX=s_rotX,tRotY=s_rotY;
 
-        // Two hands = scale + rotate
+        const bothFists=gesture.count===2&&gesture.h1&&gesture.h2&&gesture.h1.fist&&gesture.h2.fist;
+
         if(gesture.count===2){
-            tScale=Math.max(.1,gesture.zoom*3.5);
-            tRotZ=gesture.angle;
-            tRotX=(gesture.midY-.5)*Math.PI;
-            tRotY=(gesture.midX-.5)*Math.PI;
+            if(!wasTwoHands){zoomBaseDist=gesture.dist;zoomBaseScale=s_scale;wasTwoHands=true}
+            if(zoomBaseDist>0.01){
+                const ratio=gesture.dist/zoomBaseDist;
+                tScale=Math.max(.2,Math.min(5,zoomBaseScale*ratio));
+            }
+            // Rotation & tilt ONLY when both hands are fists
+            if(bothFists){
+                tRotZ=gesture.angle;
+                tRotX=(gesture.midY-.5)*Math.PI*.3;
+                tRotY=(gesture.midX-.5)*Math.PI*.6;
+            } else {
+                tRotX=0;tRotY=0;tRotZ=0;
+            }
         }
-        // One hand palm = rotate by hand position
-        else if(gesture.count===1&&gesture.h1){
-            if(gesture.h1.state==='palm'){
-                tRotY=(gesture.h1.x-.5)*Math.PI*1.5;
-                tRotX=(gesture.h1.y-.5)*Math.PI;
-            }
-            // One hand fist = drag/translate worldGroup
-            else if(gesture.h1.state==='fist'){
-                const targetX=(gesture.h1.x-.5)*30;
-                const targetY=(0.5-gesture.h1.y)*20;
-                worldGroup.position.x+=(targetX-worldGroup.position.x)*.08;
-                worldGroup.position.y+=(targetY-worldGroup.position.y)*.08;
-            }
-            // One hand point = interact with particles
-            else if(gesture.h1.state==='point'){
-                // Point interaction handled below via pm()
-            }
+        else if(gesture.count===1){
+            wasTwoHands=false;zoomBaseDist=null;
+            tRotX=0;tRotY=0;tRotZ=0;tScale=1;
         }
         else if(gesture.count===0){
-            tScale=1;
-            // Gentle auto-drift back to center
+            wasTwoHands=false;zoomBaseDist=null;
+            tScale=1;tRotX=0;tRotY=0;tRotZ=0;
             worldGroup.position.x*=0.97;worldGroup.position.y*=0.97;
             if(currentMode==='alien'){tRotX=s_rotX+.003;tRotY=s_rotY+.005}
         }
 
-        s_scale+=(tScale-s_scale)*.06;
-        let dr=tRotZ-s_rotZ;while(dr>Math.PI)dr-=6.28;while(dr<-Math.PI)dr+=6.28;s_rotZ+=dr*.09;
-        s_rotX+=(tRotX-s_rotX)*.06;s_rotY+=(tRotY-s_rotY)*.06;
-        s_fist+=((gesture.fist?1:0)-s_fist)*.06;
+        s_scale+=(tScale-s_scale)*.04;
+        let dr=tRotZ-s_rotZ;while(dr>Math.PI)dr-=6.28;while(dr<-Math.PI)dr+=6.28;
+        if(bothFists){
+            s_rotZ+=dr*.06;
+            s_rotX+=(tRotX-s_rotX)*.04;s_rotY+=(tRotY-s_rotY)*.04;
+        } else {
+            // Fast snap to zero — 0.7^60fps ≈ gone in ~8 frames
+            s_rotZ*=.7;s_rotX*=.7;s_rotY*=.7;
+            if(Math.abs(s_rotX)<0.001)s_rotX=0;
+            if(Math.abs(s_rotY)<0.001)s_rotY=0;
+            if(Math.abs(s_rotZ)<0.001)s_rotZ=0;
+        }
+        s_fist+=((gesture.fist?1:0)-s_fist)*.04;
         worldGroup.scale.set(s_scale,s_scale,s_scale);
         worldGroup.rotation.set(s_rotX,s_rotY,s_rotZ);
 
         activeWorld.up(dt);
 
-        // Particle interaction — point or any hand
-        if(gesture.h1){let w=s2w(gesture.h1.x*W,gesture.h1.y*H);if(w.hit)activeWorld.pm(w.x,w.z,.5+s_fist*2)}
-        if(gesture.h2){let w=s2w(gesture.h2.x*W,gesture.h2.y*H);if(w.hit)activeWorld.pm(w.x,w.z,.5+s_fist*2)}
+        const TIPS=[4,8,12,16,20];
+        for(let hi=0;hi<gesture.hands.length;hi++){
+            const h=gesture.hands[hi];
+            const sm=handSmooth[hi];
+            if(!h||!h.lm)continue;
 
-        if(currentMode==='flow'||currentMode==='flow2'){renderer.autoClearColor=false;if(!camView){fadeMat.color.setRGB(activeWorld.bg[0],activeWorld.bg[1],activeWorld.bg[2]);renderer.render(fadeScene,orthoCamera)}renderer.render(scene,camera)}
-        else{renderer.autoClearColor=true;renderer.setClearAlpha(camView?0:1);renderer.render(scene,camera)}
+            for(let ti=0;ti<TIPS.length;ti++){
+                const lm=h.lm[TIPS[ti]];
+                const targetX=mirrorX?(1-lm.x)*W:lm.x*W;
+                const targetY=lm.y*H;
+
+                if(sm.tips[ti].x===0&&sm.tips[ti].y===0){
+                    sm.tips[ti].x=targetX;
+                    sm.tips[ti].y=targetY;
+                } else {
+                    sm.tips[ti].x+=(targetX-sm.tips[ti].x)*TRACKING_SMOOTH_FACTOR;
+                    sm.tips[ti].y+=(targetY-sm.tips[ti].y)*TRACKING_SMOOTH_FACTOR;
+                }
+
+                if(currentMode==='smear'&&activeWorld.pmXY){
+                    var ndcX=(sm.tips[ti].x/W)*2-1;
+                    var ndcY=-((sm.tips[ti].y/H)*2-1);
+                    var halfH=Math.tan(75*Math.PI/360)*38;
+                    activeWorld.pmXY(ndcX*halfH*(W/H), ndcY*halfH);
+                } else {
+                    const w=s2w(sm.tips[ti].x,sm.tips[ti].y);
+                    if(w.hit)activeWorld.pm(w.x,w.z,1.2);
+                }
+            }
+        }
+
+        if(currentMode==='flow'||currentMode==='flow2'||currentMode==='smear'){renderer.autoClearColor=false;fadeMat.color.setRGB(activeWorld.bg[0],activeWorld.bg[1],activeWorld.bg[2]);fadeMat.opacity=currentMode==='smear'?0.12:0.1;renderer.render(fadeScene,orthoCamera);renderer.render(scene,camera)}
+        else{renderer.autoClearColor=true;renderer.setClearAlpha(1);renderer.render(scene,camera)}
     }
     else if(currentCategory==='game'){
         gCtx.clearRect(0,0,W,H);
@@ -810,7 +782,6 @@ function animate(){
         gCtx.beginPath();gCtx.arc(p.x,p.y,p.r,0,6.28);gCtx.fillStyle=p.isFruit?`${p.color}${p.alpha})`:p.color;gCtx.globalAlpha=p.isFruit?1:p.alpha;gCtx.fill();gCtx.globalAlpha=1}
     }
 
-    // Iron Man overlay (always draws on top)
     drawHolo();
 }
 
@@ -862,10 +833,51 @@ async function processLoop(){
 
 window.addEventListener('resize',()=>{W=window.innerWidth;H=window.innerHeight;renderer.setSize(W,H);camera.aspect=W/H;camera.updateProjectionMatrix();gameCanvas.width=hudCanvas.width=W;gameCanvas.height=hudCanvas.height=H});
 
-// BOOT
-setMode('pond','world');
+setMode('smear','world'); 
 animate();
 getCameras();
+
+// ── Remote control via BroadcastChannel ──────────────────
+(function(){
+    const ch=new BroadcastChannel('ironhand-remote');
+    ch.onmessage=function(e){
+        const d=e.data;
+        if(!d||!d.cmd)return;
+        switch(d.cmd){
+            case'setMode':   setMode(d.mode,d.cat);break;
+            case'setRes':    setRes(d.res);break;
+            case'toggleUI':  toggleUI();break;
+            case'toggleFS':  toggleFS();break;
+            case'toggleMirror': toggleMirror();break;
+            case'toggleHolo':   toggleHolo();break;
+            case'toggleSkeleton': toggleSkeleton();break;
+            case'toggleCamView':  toggleCamView();break;
+            case'toggleCamRotation': toggleCamRotation();break;
+            case'setSlider':
+                var el=document.getElementById(d.id);
+                if(el){el.value=d.value;el.dispatchEvent(new Event('input'));}
+                break;
+            case'getState':
+                ch.postMessage({type:'state',
+                    mode:currentMode,cat:currentCategory,res:currentRes,
+                    mirrorX,holoEnabled,skeletonEnabled,camView,
+                    camRotation,uiVisible,
+                    fps:fpsEl.textContent,hands:handStatusEl.textContent,
+                    status:statusEl.textContent,gesture:gestureHudEl.textContent
+                });
+                break;
+        }
+    };
+    // Broadcast live status every second
+    setInterval(()=>{
+        ch.postMessage({type:'status',
+            mode:currentMode,cat:currentCategory,res:currentRes,
+            mirrorX,holoEnabled,skeletonEnabled,camView,camRotation,
+            fps:fpsEl.textContent,hands:handStatusEl.textContent,
+            status:statusEl.textContent,gesture:gestureHudEl.textContent
+        });
+    },1000);
+})();
 </script>
 </body>
 </html>

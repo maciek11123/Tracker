@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Iron Hand — Remote</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=JetBrains+Mono:wght@300;400;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{
+  --c0:#050508;--c1:#0a0a14;--c2:#101020;
+  --cyan:#00e5ff;--cyan2:rgba(0,229,255,0.12);--cyan3:rgba(0,229,255,0.25);
+  --red:#ff4444;--green:#50fa7b;--purple:#be78ff;--gold:#fbbf24;
+}
+html,body{height:100%;overflow:hidden;background:var(--c0);color:#fff;
+  font-family:'JetBrains Mono',monospace;user-select:none;touch-action:manipulation}
+body{display:flex;flex-direction:column;overscroll-behavior:none}
+
+/* ── scanline overlay ── */
+body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.03) 2px,rgba(0,0,0,0.03) 4px)}
+body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 0%,rgba(0,229,255,0.04) 0%,transparent 70%)}
+
+/* ── Status bar ── */
+#statusbar{
+  position:relative;z-index:10;
+  padding:max(env(safe-area-inset-top,10px),10px) 14px 8px;
+  background:rgba(5,5,12,0.95);border-bottom:1px solid rgba(0,229,255,0.1);
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+}
+#conn-dot{width:7px;height:7px;border-radius:50%;background:#444;flex-shrink:0;
+  transition:background .3s;box-shadow:0 0 0 0 #444}
+#conn-dot.live{background:var(--green);box-shadow:0 0 6px var(--green);
+  animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 4px var(--green)}50%{box-shadow:0 0 12px var(--green)}}
+#status-text{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,0.5);flex:1}
+#hud-fps{font-size:9px;color:rgba(0,229,255,0.5);letter-spacing:1px}
+#hud-hands{font-size:9px;color:var(--cyan);letter-spacing:1px}
+#hud-gesture{font-size:9px;color:var(--purple);font-weight:700;letter-spacing:1px}
+
+/* ── Scroll container ── */
+#scroll{flex:1;overflow-y:auto;overflow-x:hidden;position:relative;z-index:1;
+  padding:10px 10px max(env(safe-area-inset-bottom,20px),20px);
+  display:flex;flex-direction:column;gap:8px}
+#scroll::-webkit-scrollbar{width:3px}
+#scroll::-webkit-scrollbar-track{background:transparent}
+#scroll::-webkit-scrollbar-thumb{background:rgba(0,229,255,0.2);border-radius:2px}
+
+/* ── Section header ── */
+.section-label{font-size:8px;letter-spacing:2.5px;text-transform:uppercase;
+  color:rgba(0,229,255,0.4);padding:0 2px 4px;border-bottom:1px solid rgba(0,229,255,0.08)}
+
+/* ── Panel ── */
+.panel{background:var(--c1);border:1px solid rgba(0,229,255,0.1);border-radius:10px;
+  padding:10px;display:flex;flex-direction:column;gap:8px}
+
+/* ── Button grid ── */
+.btn-grid{display:grid;gap:6px}
+.btn-grid.cols-3{grid-template-columns:repeat(3,1fr)}
+.btn-grid.cols-4{grid-template-columns:repeat(4,1fr)}
+.btn-grid.cols-2{grid-template-columns:repeat(2,1fr)}
+.btn-grid.cols-5{grid-template-columns:repeat(5,1fr)}
+
+/* ── Base button ── */
+.rb{
+  padding:11px 6px;border-radius:7px;
+  font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.8px;
+  text-transform:uppercase;text-align:center;line-height:1.3;
+  border:1px solid rgba(255,255,255,0.08);background:var(--c2);
+  color:rgba(255,255,255,0.4);cursor:pointer;
+  transition:all .1s;position:relative;overflow:hidden;
+  -webkit-tap-highlight-color:transparent;
+  /* Prevent iOS callout */
+  -webkit-touch-callout:none;
+}
+.rb:active{transform:scale(0.94);opacity:0.8}
+.rb.active{
+  background:var(--cyan2);color:var(--cyan);
+  border-color:var(--cyan3);
+  box-shadow:0 0 10px rgba(0,229,255,0.1);
+}
+.rb.active::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(0,229,255,0.06),transparent);
+  pointer-events:none;
+}
+/* Mode button variants */
+.rb.mode-world.active{color:var(--cyan);border-color:var(--cyan3)}
+.rb.mode-game{color:rgba(80,250,123,0.5);border-color:rgba(80,250,123,0.1)}
+.rb.mode-game.active{color:var(--green);border-color:rgba(80,250,123,0.4);background:rgba(80,250,123,0.1)}
+.rb.mode-alien{color:rgba(255,68,68,0.5);border-color:rgba(255,68,68,0.1)}
+.rb.mode-alien.active{color:var(--red);border-color:rgba(255,68,68,0.4);background:rgba(255,68,68,0.1)}
+.rb.res.active{color:var(--cyan);border-color:var(--cyan3);background:var(--cyan2)}
+.rb.toggle.active{color:var(--cyan);border-color:var(--cyan3);background:var(--cyan2)}
+.rb.danger{color:rgba(255,68,68,0.6)}
+.rb.danger.active{color:var(--red);border-color:rgba(255,68,68,0.5);background:rgba(255,68,68,0.1)}
+
+/* ── Sliders ── */
+.slider-row{display:flex;align-items:center;gap:8px;padding:2px 0}
+.slider-label{font-size:8px;letter-spacing:1.5px;text-transform:uppercase;
+  color:rgba(0,229,255,0.5);width:32px;flex-shrink:0}
+.slider-row input[type=range]{
+  flex:1;height:3px;accent-color:var(--cyan);cursor:pointer;
+  background:rgba(0,229,255,0.15);border-radius:2px;outline:none;border:none;
+  -webkit-appearance:none;appearance:none;
+}
+.slider-row input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:16px;height:16px;
+  border-radius:50%;background:var(--cyan);cursor:pointer;
+  box-shadow:0 0 6px rgba(0,229,255,0.5);
+}
+.slider-val{font-size:9px;color:rgba(0,229,255,0.7);width:28px;text-align:right;flex-shrink:0}
+
+/* ── Flow opts (only shown for flow/flow2) ── */
+#flow-opts-remote{display:none}
+
+/* ── Cam rotate button ── */
+#cam-rot-btn{display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:9px 6px}
+#cam-deg-label{font-size:10px;color:var(--cyan);font-family:'Orbitron',sans-serif;font-weight:700}
+
+/* ── Disconnect notice ── */
+#no-conn{display:none;position:fixed;inset:0;z-index:100;
+  background:rgba(5,5,12,0.97);flex-direction:column;align-items:center;justify-content:center;gap:14px}
+#no-conn.show{display:flex}
+#no-conn h2{font-family:'Orbitron';font-size:13px;letter-spacing:3px;color:var(--cyan);text-transform:uppercase}
+#no-conn p{font-size:10px;color:rgba(255,255,255,0.4);letter-spacing:1.5px;text-align:center;line-height:1.8;max-width:240px}
+#no-conn a{color:var(--cyan);text-decoration:none;border-bottom:1px solid rgba(0,229,255,0.3)}
+.spinner{width:32px;height:32px;border:2px solid rgba(0,229,255,0.15);border-top-color:var(--cyan);
+  border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Ripple ── */
+.ripple{position:absolute;border-radius:50%;background:rgba(0,229,255,0.25);
+  transform:scale(0);animation:ripple .4s linear;pointer-events:none}
+@keyframes ripple{to{transform:scale(4);opacity:0}}
+</style>
+</head>
+<body>
+
+<!-- Status bar -->
+<div id="statusbar">
+  <div id="conn-dot"></div>
+  <div id="status-text">Searching for tracker…</div>
+  <div id="hud-fps">-- fps</div>
+  <div id="hud-hands">🖐 0</div>
+  <div id="hud-gesture" style="min-width:60px">—</div>
+</div>
+
+<!-- No connection overlay -->
+<div id="no-conn" class="show">
+  <div class="spinner"></div>
+  <h2>Waiting for Tracker</h2>
+  <p>Open the tracker in another tab on the same device or browser.<br>
+     <a href="https://maciek11123.github.io/Tracker/" target="_blank">maciek11123.github.io/Tracker</a></p>
+</div>
+
+<div id="scroll">
+
+  <!-- WORLD MODES -->
+  <div class="section-label">World Mode</div>
+  <div class="panel">
+    <div class="btn-grid cols-3">
+      <button class="rb mode-world active" id="r-pond"    data-mode="pond"    data-cat="world">Pond</button>
+      <button class="rb mode-world"        id="r-flow"    data-mode="flow"    data-cat="world">Flow</button>
+      <button class="rb mode-world"        id="r-flow2"   data-mode="flow2"   data-cat="world">Flow v2</button>
+      <button class="rb mode-world"        id="r-smear"   data-mode="smear"   data-cat="world">Waterfall</button>
+      <button class="rb mode-world"        id="r-earth"   data-mode="earth"   data-cat="world">Earth</button>
+      <button class="rb mode-world"        id="r-nebula"  data-mode="nebula"  data-cat="world">Nebula</button>
+      <button class="rb mode-world"        id="r-storm"   data-mode="storm"   data-cat="world">Storm</button>
+      <button class="rb mode-world"        id="r-shatter" data-mode="shatter" data-cat="world">Shatter</button>
+      <button class="rb mode-alien"        id="r-alien"   data-mode="alien"   data-cat="world">Alien</button>
+    </div>
+  </div>
+
+  <!-- GAMES -->
+  <div class="section-label">Games</div>
+  <div class="panel">
+    <div class="btn-grid cols-2">
+      <button class="rb mode-game" id="r-bubbles" data-mode="bubbles" data-cat="game">🫧 Bubbles</button>
+      <button class="rb mode-game" id="r-fruits"  data-mode="fruits"  data-cat="game">🍉 Fruits</button>
+    </div>
+  </div>
+
+  <!-- RESOLUTION -->
+  <div class="section-label">Resolution</div>
+  <div class="panel">
+    <div class="btn-grid cols-3">
+      <button class="rb res active" id="r-res-low"  data-res="low">Low</button>
+      <button class="rb res"        id="r-res-med"  data-res="med">Med</button>
+      <button class="rb res"        id="r-res-high" data-res="high">High</button>
+    </div>
+  </div>
+
+  <!-- FLOW SLIDERS (shown only for flow / flow v2) -->
+  <div class="section-label" id="flow-opts-label" style="display:none">Flow Settings</div>
+  <div class="panel" id="flow-opts-remote">
+    <div class="slider-row">
+      <span class="slider-label">Rot</span>
+      <input type="range" id="r-s-rot" min="0" max="3" step="0.1" value="1">
+      <span class="slider-val" id="v-s-rot">1.0</span>
+    </div>
+    <div class="slider-row">
+      <span class="slider-label">Spd</span>
+      <input type="range" id="r-s-int" min="0" max="3" step="0.1" value="1">
+      <span class="slider-val" id="v-s-int">1.0</span>
+    </div>
+    <div class="slider-row">
+      <span class="slider-label">Rad</span>
+      <input type="range" id="r-s-rad" min="0.2" max="3" step="0.1" value="1">
+      <span class="slider-val" id="v-s-rad">1.0</span>
+    </div>
+    <div class="slider-row">
+      <span class="slider-label">Frc</span>
+      <input type="range" id="r-s-frc" min="0" max="3" step="0.1" value="1">
+      <span class="slider-val" id="v-s-frc">1.0</span>
+    </div>
+  </div>
+
+  <!-- OVERLAYS -->
+  <div class="section-label">Overlays</div>
+  <div class="panel">
+    <div class="btn-grid cols-3">
+      <button class="rb toggle active" id="r-holo"     data-cmd="toggleHolo">✨ Holo</button>
+      <button class="rb toggle active" id="r-skeleton" data-cmd="toggleSkeleton">🦴 Skel</button>
+      <button class="rb toggle active" id="r-mirror"   data-cmd="toggleMirror">🪞 Flip</button>
+    </div>
+  </div>
+
+  <!-- CAMERA -->
+  <div class="section-label">Camera</div>
+  <div class="panel">
+    <div class="btn-grid cols-3">
+      <button class="rb toggle" id="r-camview" data-cmd="toggleCamView">📷 Preview</button>
+      <button class="rb" id="r-camrot" data-cmd="toggleCamRotation">
+        <div id="cam-deg-label">0°</div>
+        <div style="font-size:7px;opacity:.5;margin-top:2px">ROTATE</div>
+      </button>
+      <button class="rb" data-cmd="toggleFS">⛶ Full</button>
+    </div>
+  </div>
+
+  <!-- UI TOGGLE -->
+  <div class="section-label">Display</div>
+  <div class="panel">
+    <div class="btn-grid cols-2">
+      <button class="rb toggle active" id="r-ui" data-cmd="toggleUI">☰ HUD</button>
+      <button class="rb" onclick="window.open('https://maciek11123.github.io/Tracker/','_blank')" style="color:rgba(0,229,255,0.5)">↗ Open Tracker</button>
+    </div>
+  </div>
+
+</div><!-- /scroll -->
+
+<script>
+const ch = new BroadcastChannel('ironhand-remote');
+let connected = false;
+let liveState = {};
+let camRotDeg = 0;
+
+// ── Send helpers ──────────────────────────────────────────
+function send(obj){ ch.postMessage(obj); }
+function ripple(btn){
+  const r=document.createElement('span');r.className='ripple';
+  const rect=btn.getBoundingClientRect();
+  const size=Math.max(rect.width,rect.height);
+  r.style.cssText=`width:${size}px;height:${size}px;left:${rect.width/2-size/2}px;top:${rect.height/2-size/2}px`;
+  btn.appendChild(r);setTimeout(()=>r.remove(),400);
+}
+
+// ── Connection status ─────────────────────────────────────
+function setConnected(val){
+  connected=val;
+  document.getElementById('conn-dot').classList.toggle('live',val);
+  document.getElementById('status-text').textContent=val?'Connected':'Searching…';
+  document.getElementById('no-conn').classList.toggle('show',!val);
+}
+
+// Ping tracker every 2s, expect status back
+let pingTimer=setInterval(()=>{ send({cmd:'getState'}); },2000);
+let lostTimer=null;
+
+function resetLostTimer(){
+  clearTimeout(lostTimer);
+  lostTimer=setTimeout(()=>setConnected(false),4000);
+  setConnected(true);
+}
+
+// ── Receive from tracker ──────────────────────────────────
+ch.onmessage=function(e){
+  const d=e.data;
+  if(!d)return;
+  if(d.type==='status'||d.type==='state'){
+    resetLostTimer();
+    liveState=d;
+    document.getElementById('hud-fps').textContent=d.fps||'';
+    document.getElementById('hud-hands').textContent=d.hands||'';
+    document.getElementById('hud-gesture').textContent=d.gesture||'—';
+    syncButtonsFromState(d);
+  }
+};
+
+function syncButtonsFromState(s){
+  // Mode buttons
+  document.querySelectorAll('.rb[data-mode]').forEach(b=>{
+    b.classList.toggle('active', b.dataset.mode===s.mode);
+  });
+  // Res buttons
+  document.querySelectorAll('.rb[data-res]').forEach(b=>{
+    b.classList.toggle('active', b.dataset.res===s.res);
+  });
+  // Toggles
+  setToggle('r-holo',     s.holoEnabled!==false);
+  setToggle('r-skeleton', s.skeletonEnabled!==false);
+  setToggle('r-mirror',   s.mirrorX!==false);
+  setToggle('r-camview',  !!s.camView);
+  setToggle('r-ui',       s.uiVisible!==false);
+  // Flow opts visibility
+  const showFlow=s.mode==='flow'||s.mode==='flow2';
+  document.getElementById('flow-opts-remote').style.display=showFlow?'flex':'none';
+  document.getElementById('flow-opts-label').style.display=showFlow?'block':'none';
+  // Cam rotation
+  if(typeof s.camRotation==='number'){ camRotDeg=s.camRotation; }
+  document.getElementById('cam-deg-label').textContent=camRotDeg+'°';
+}
+
+function setToggle(id,val){
+  const el=document.getElementById(id);
+  if(el) el.classList.toggle('active',val);
+}
+
+// ── Mode buttons ──────────────────────────────────────────
+document.querySelectorAll('.rb[data-mode]').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    ripple(btn);
+    send({cmd:'setMode', mode:btn.dataset.mode, cat:btn.dataset.cat});
+    // Optimistic update
+    document.querySelectorAll('.rb[data-mode]').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    const showFlow=btn.dataset.mode==='flow'||btn.dataset.mode==='flow2';
+    document.getElementById('flow-opts-remote').style.display=showFlow?'flex':'none';
+    document.getElementById('flow-opts-label').style.display=showFlow?'block':'none';
+  });
+});
+
+// ── Res buttons ───────────────────────────────────────────
+document.querySelectorAll('.rb[data-res]').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    ripple(btn);
+    send({cmd:'setRes', res:btn.dataset.res});
+    document.querySelectorAll('.rb[data-res]').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// ── Toggle buttons ────────────────────────────────────────
+document.querySelectorAll('.rb[data-cmd]').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    ripple(btn);
+    const cmd=btn.dataset.cmd;
+    send({cmd});
+    // Optimistic toggle for visual buttons
+    if(cmd==='toggleCamRotation'){
+      camRotDeg=(camRotDeg+90)%360;
+      document.getElementById('cam-deg-label').textContent=camRotDeg+'°';
+    } else if(['toggleHolo','toggleSkeleton','toggleMirror','toggleCamView','toggleUI'].includes(cmd)){
+      btn.classList.toggle('active');
+    }
+  });
+});
+
+// ── Sliders ───────────────────────────────────────────────
+[['r-s-rot','s-rot'],['r-s-int','s-int'],['r-s-rad','s-rad'],['r-s-frc','s-frc']].forEach(([rid,sid])=>{
+  const el=document.getElementById(rid);
+  const val=document.getElementById('v-'+sid);
+  if(!el)return;
+  el.addEventListener('input',()=>{
+    val.textContent=parseFloat(el.value).toFixed(1);
+    send({cmd:'setSlider', id:sid, value:el.value});
+  });
+});
+
+// ── Prevent body scroll bounce on iOS ────────────────────
+document.getElementById('scroll').addEventListener('touchmove',e=>e.stopPropagation(),{passive:true});
+document.body.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
+
+// Initial state request
+send({cmd:'getState'});
+</script>
+</body>
+</html>
