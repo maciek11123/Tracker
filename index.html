@@ -114,6 +114,7 @@ video.cam-on{opacity:1}
         <button class="btn active" id="btn-mirror" onclick="toggleMirror()">🪞 Flip</button>
         <button class="btn active" id="btn-holo" onclick="toggleHolo()">✨ Holo</button>
         <button class="btn active" id="btn-skeleton" onclick="toggleSkeleton()">🦴 Skel</button>
+        <button class="btn active" id="btn-sound" onclick="toggleSound()">🔊 Sound</button>
     </div>
 </div>
 
@@ -137,6 +138,309 @@ let gesture={count:0,fist:false,h1:null,h2:null,hands:[]};
 let s_scale=1,s_rotZ=0,s_rotX=0,s_rotY=0,s_fist=0;
 let dragOffsetX=0,dragOffsetY=0,isDragging=false;
 let zoomBaseDist=null,zoomBaseScale=1,wasTwoHands=false;
+
+// ═══════════════════════════════════════════════════
+//  AUDIO ENGINE
+// ═══════════════════════════════════════════════════
+const Audio = (()=>{
+    let ctx=null, masterGain=null, ambientNode=null, rotorNode=null;
+    let soundEnabled=true, ambientMode=null;
+    let rotorGain=null, rotorOsc=null;
+    let prevHandCount=0, prevGestureState=['none','none'];
+
+    function init(){
+        if(ctx) return;
+        ctx = new (window.AudioContext||window.webkitAudioContext)();
+        masterGain = ctx.createGain();
+        masterGain.gain.value = 0.6;
+        masterGain.connect(ctx.destination);
+    }
+
+    function enabled(){ return soundEnabled && ctx; }
+
+    // ── Low-level synth helpers ─────────────────────
+    function osc(freq, type='sine', detune=0){
+        const o = ctx.createOscillator();
+        o.type = type; o.frequency.value = freq; o.detune.value = detune;
+        return o;
+    }
+    function gain(val){ const g=ctx.createGain(); g.gain.value=val; return g; }
+    function filter(freq, type='lowpass', Q=1){
+        const f=ctx.createBiquadFilter(); f.type=type; f.frequency.value=freq; f.Q.value=Q; return f;
+    }
+    function connect(...nodes){ for(let i=0;i<nodes.length-1;i++) nodes[i].connect(nodes[i+1]); return nodes[nodes.length-1]; }
+    function now(){ return ctx.currentTime; }
+
+    // ── One-shot transient sounds ───────────────────
+    function playTone(freq, dur, vol=0.3, type='sine', attack=0.01, detune=0){
+        if(!enabled()) return;
+        const o=osc(freq,type,detune), g=gain(0), f=filter(freq*3,'lowpass',0.8);
+        connect(o,f,g,masterGain);
+        o.start(now());
+        g.gain.setValueAtTime(0, now());
+        g.gain.linearRampToValueAtTime(vol, now()+attack);
+        g.gain.exponentialRampToValueAtTime(0.001, now()+dur);
+        o.stop(now()+dur+0.05);
+    }
+
+    function playChord(freqs, dur, vol=0.15, type='sine'){
+        freqs.forEach((f,i)=> playTone(f, dur, vol, type, 0.01+i*0.02));
+    }
+
+    function playNoise(dur, vol=0.2, lowpass=2000){
+        if(!enabled()) return;
+        const buf=ctx.createBuffer(1,ctx.sampleRate*dur,ctx.sampleRate);
+        const d=buf.getChannelData(0);
+        for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+        const src=ctx.createBufferSource(); src.buffer=buf;
+        const f=filter(lowpass,'lowpass',0.5);
+        const g=gain(0);
+        connect(src,f,g,masterGain);
+        g.gain.setValueAtTime(vol, now());
+        g.gain.exponentialRampToValueAtTime(0.001, now()+dur);
+        src.start(now()); src.stop(now()+dur+0.1);
+    }
+
+    function playClick(freq=800, vol=0.25){
+        if(!enabled()) return;
+        const o=osc(freq,'square'), g=gain(0), f=filter(1200,'bandpass',3);
+        connect(o,f,g,masterGain);
+        o.start(now()); g.gain.setValueAtTime(vol,now());
+        g.gain.exponentialRampToValueAtTime(0.001,now()+0.04);
+        o.stop(now()+0.06);
+    }
+
+    // ── Gesture SFX ────────────────────────────────
+    function onHandAppear(){
+        if(!enabled()) return;
+        // Rising chime: C5 E5 G5
+        [523,659,784].forEach((f,i)=> setTimeout(()=>playTone(f,0.3,0.18,'sine',0.01),i*55));
+    }
+    function onHandDisappear(){
+        if(!enabled()) return;
+        // Falling whoosh
+        const o=osc(400,'sine'), g=gain(0.15), f=filter(800,'lowpass',1);
+        connect(o,f,g,masterGain);
+        o.frequency.setValueAtTime(400,now());
+        o.frequency.exponentialRampToValueAtTime(80,now()+0.4);
+        g.gain.setValueAtTime(0.15,now());
+        g.gain.exponentialRampToValueAtTime(0.001,now()+0.4);
+        o.start(now()); o.stop(now()+0.5);
+    }
+    function onFistForm(){
+        if(!enabled()) return;
+        // Thump + energy charge
+        playNoise(0.15, 0.35, 180);
+        playTone(60,'sine',0.4,'sine',0.005);
+        setTimeout(()=>playTone(120,0.2,0.15,'sawtooth',0.01),80);
+    }
+    function onFistRelease(){
+        if(!enabled()) return;
+        // Exhale / release
+        const o=osc(200,'sine'), g=gain(0.12);
+        connect(o,g,masterGain);
+        o.frequency.setValueAtTime(200,now());
+        o.frequency.exponentialRampToValueAtTime(80,now()+0.25);
+        g.gain.setValueAtTime(0.12,now());
+        g.gain.exponentialRampToValueAtTime(0.001,now()+0.25);
+        o.start(now()); o.stop(now()+0.3);
+        playNoise(0.3, 0.08, 600);
+    }
+    function onPeace(){
+        if(!enabled()) return;
+        // Sparkle shimmer
+        [1047,1319,1568,2093].forEach((f,i)=>
+            setTimeout(()=>playTone(f,0.2,0.08,'sine',0.005),i*40));
+    }
+    function onZoomIn(){
+        if(!enabled()) return;
+        playTone(440,0.12,0.1,'sine',0.01);
+        setTimeout(()=>playTone(550,0.1,0.08,'sine',0.005),60);
+    }
+    function onZoomOut(){
+        if(!enabled()) return;
+        playTone(550,0.12,0.1,'sine',0.01);
+        setTimeout(()=>playTone(440,0.1,0.08,'sine',0.005),60);
+    }
+    function onRotationStart(){
+        if(!enabled()||rotorNode) return;
+        // Gyroscope hum — continuous while rotating
+        rotorGain = gain(0);
+        rotorOsc  = osc(55,'sawtooth');
+        const f   = filter(300,'lowpass',2);
+        connect(rotorOsc,f,rotorGain,masterGain);
+        rotorOsc.start(now());
+        rotorGain.gain.setValueAtTime(0,now());
+        rotorGain.gain.linearRampToValueAtTime(0.08,now()+0.2);
+        rotorNode = {o:rotorOsc, g:rotorGain};
+    }
+    function onRotationEnd(){
+        if(!rotorNode) return;
+        rotorNode.g.gain.setValueAtTime(rotorNode.g.gain.value,now());
+        rotorNode.g.gain.linearRampToValueAtTime(0,now()+0.3);
+        setTimeout(()=>{ try{rotorNode.o.stop();}catch(e){} rotorNode=null; },350);
+    }
+    function onRepel(){
+        if(!enabled()) return;
+        // Air burst
+        playNoise(0.12, 0.18, 3000);
+    }
+    function onModeSwitch(){
+        if(!enabled()) return;
+        playClick(600,0.2);
+    }
+
+    // ── Ambient drones per mode ─────────────────────
+    const AMBIENTS = {
+        pond:    ()=> buildAmbient([[55,0.06,'sine'],[110,0.04,'sine'],[220,0.02,'sine']], 800, true),
+        flow:    ()=> buildAmbient([[40,0.07,'sine'],[80,0.03,'sawtooth']], 400, true),
+        flow2:   ()=> buildAmbient([[40,0.07,'sine'],[80,0.03,'sawtooth']], 400, true),
+        smear:   ()=> buildNoiseAmbient(0.12, 1200, 'waterfall'),
+        vortex:  ()=> buildAmbient([[30,0.1,'sine'],[60,0.05,'sawtooth'],[90,0.02,'sine']], 200, false),
+        earth:   ()=> buildAmbient([[55,0.04,'sine'],[110,0.02,'sine']], 600, true),
+        nebula:  ()=> buildAmbient([[880,0.02,'sine'],[1100,0.015,'sine'],[1320,0.01,'sine']], 2000, true),
+        storm:   ()=> buildNoiseAmbient(0.15, 800, 'storm'),
+        shatter: ()=> buildAmbient([[100,0.05,'sawtooth'],[200,0.03,'sawtooth']], 500, false),
+        alien:   ()=> buildAmbient([[55,0.08,'sine'],[73,0.05,'sine'],[110,0.03,'sawtooth']], 300, true),
+        bubbles: ()=> buildAmbient([[330,0.03,'sine'],[440,0.02,'sine']], 1200, true),
+        fruits:  ()=> buildAmbient([[220,0.03,'sine'],[330,0.02,'sine']], 800, true),
+    };
+
+    function buildAmbient(layers, filterFreq, addNoise){
+        const masterG = gain(0);
+        const oscs = layers.map(([freq,vol,type])=>{
+            const o=osc(freq,type, (Math.random()-0.5)*5);
+            const g=gain(vol);
+            // Subtle LFO on each layer
+            const lfo=osc(0.15+Math.random()*0.1,'sine');
+            const lfoG=gain(vol*0.3);
+            lfo.connect(lfoG); lfoG.connect(g.gain);
+            lfo.start(now());
+            connect(o,g,masterG);
+            o.start(now());
+            return {o,lfo,g};
+        });
+        const f=filter(filterFreq,'lowpass',0.8);
+        masterG.connect(f); f.connect(masterGain);
+        masterG.gain.setValueAtTime(0,now());
+        masterG.gain.linearRampToValueAtTime(1,now()+1.5);
+        if(addNoise){
+            // Continuous noise layer — loop via scriptProcessor substitute
+        }
+        return { stop(){ masterG.gain.setValueAtTime(masterG.gain.value,now()); masterG.gain.linearRampToValueAtTime(0,now()+1); setTimeout(()=>{ oscs.forEach(({o,lfo})=>{try{o.stop();lfo.stop();}catch(e){}});},1100); }};
+    }
+
+    function buildNoiseAmbient(vol, lpFreq, type){
+        // Looping noise using short buffers chained
+        let stopped=false;
+        const masterG=gain(0);
+        const f=filter(lpFreq,'lowpass',type==='waterfall'?0.5:1.5);
+        masterG.connect(f); f.connect(masterGain);
+        masterG.gain.setValueAtTime(0,now());
+        masterG.gain.linearRampToValueAtTime(vol,now()+1.5);
+
+        function playChunk(){
+            if(stopped) return;
+            const dur=0.5;
+            const buf=ctx.createBuffer(1,ctx.sampleRate*dur,ctx.sampleRate);
+            const d=buf.getChannelData(0);
+            for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+            const src=ctx.createBufferSource(); src.buffer=buf;
+            src.connect(masterG);
+            src.start(now()); src.stop(now()+dur+0.01);
+            src.onended=()=>{ if(!stopped) playChunk(); };
+        }
+        playChunk();
+
+        // For storm: add random thunder
+        let thunderTimer=null;
+        if(type==='storm'){
+            function scheduleThunder(){
+                if(stopped) return;
+                const delay=2000+Math.random()*4000;
+                thunderTimer=setTimeout(()=>{
+                    if(!stopped&&enabled()){
+                        playNoise(0.8,0.4,300);
+                        playTone(40,0.6,0.3,'sine',0.02);
+                    }
+                    scheduleThunder();
+                },delay);
+            }
+            scheduleThunder();
+        }
+        return { stop(){ stopped=true; clearTimeout(thunderTimer);
+            masterG.gain.setValueAtTime(masterG.gain.value,now());
+            masterG.gain.linearRampToValueAtTime(0,now()+1);
+        }};
+    }
+
+    // ── Ambient management ──────────────────────────
+    function startAmbient(mode){
+        if(ambientNode){ ambientNode.stop(); ambientNode=null; }
+        if(!enabled()) return;
+        if(AMBIENTS[mode]){ ambientNode=AMBIENTS[mode](); ambientMode=mode; }
+    }
+    function stopAmbient(){
+        if(ambientNode){ ambientNode.stop(); ambientNode=null; }
+        ambientMode=null;
+    }
+
+    // ── Modulate vortex rotor pitch from rotation speed ─
+    function setRotorPitch(speed){
+        if(rotorNode) rotorNode.o.frequency.setTargetAtTime(55+speed*800, now(), 0.1);
+    }
+
+    // ── Per-frame tick called from animate() ────────
+    let lastBothFists=false, lastZoomDir=0, zoomDebounce=0;
+    function tick(dt, bothFists, gestureCount, gestureState, zoomDelta){
+        if(!ctx) return;
+
+        // Zoom sounds
+        if(zoomDebounce>0) zoomDebounce-=dt;
+        if(Math.abs(zoomDelta)>0.015 && zoomDebounce<=0){
+            if(zoomDelta>0) onZoomIn(); else onZoomOut();
+            zoomDebounce=0.18;
+        }
+
+        // Rotation start/stop
+        if(bothFists && !lastBothFists) onRotationStart();
+        if(!bothFists && lastBothFists) onRotationEnd();
+        lastBothFists=bothFists;
+    }
+
+    // ── Gesture state change hook ───────────────────
+    function onGestureChange(handIdx, prevState, newState){
+        if(!enabled()) return;
+        if(newState==='fist' && prevState!=='fist') onFistForm();
+        if(prevState==='fist' && newState!=='fist') onFistRelease();
+        if(newState==='peace') onPeace();
+        if(newState==='palm' && prevState==='none') onRepel();
+    }
+
+    // ── Hand count change ───────────────────────────
+    function onHandCountChange(prev, next){
+        if(!enabled()) return;
+        if(next>prev) onHandAppear();
+        if(next<prev) onHandDisappear();
+    }
+
+    // ── Toggle ──────────────────────────────────────
+    function toggle(){
+        if(!ctx) init();
+        soundEnabled=!soundEnabled;
+        if(soundEnabled){ masterGain.gain.setTargetAtTime(0.6,now(),0.1); startAmbient(ambientMode||currentMode); }
+        else{ masterGain.gain.setTargetAtTime(0,now(),0.1); }
+        const b=document.getElementById('btn-sound');
+        if(b){ b.classList.toggle('active',soundEnabled); b.textContent=soundEnabled?'🔊 Sound':'🔇 Sound'; }
+        return soundEnabled;
+    }
+
+    return { init, startAmbient, stopAmbient, onModeSwitch, onGestureChange,
+             onHandCountChange, tick, setRotorPitch, toggle,
+             get enabled(){ return soundEnabled; } };
+})();
+
+window.toggleSound = ()=> Audio.toggle();
 
 // Per-hand smoothed positions + trails (Updated with tip tracking interpolation)
 const TRACKING_SMOOTH_FACTOR = 0.35;
@@ -776,6 +1080,7 @@ window.setMode=function(mode,cat){
     const btn=document.getElementById(`btn-${mode}`);if(btn)btn.classList.add('active');
     document.getElementById('flow-opts').style.display=(mode==='flow'||mode==='flow2')?'flex':'none';
     document.getElementById('vortex-opts').style.display=(mode==='vortex')?'flex':'none';
+    Audio.init(); Audio.onModeSwitch(); Audio.startAmbient(mode);
     if(cat==='world'){
         threeCanvas.style.display='block';gameCanvas.style.display='none';document.getElementById('game-ui').style.display='none';
         while(worldGroup.children.length)worldGroup.remove(worldGroup.children[0]);
@@ -799,6 +1104,7 @@ function onResults(results){
     handStatusEl.textContent=`Hands: ${hc}`;
 
     if(hc===0){
+        Audio.onHandCountChange(gesture.count, 0);
         statusEl.textContent='Searching…';statusEl.className='badge b-status loading';
         gestureHudEl.textContent='—';
         for(let i=0;i<2;i++){
@@ -811,7 +1117,9 @@ function onResults(results){
     }
 
     statusEl.textContent='Tracking';statusEl.className='badge b-status';
+    const prevCount = gesture.count;
     gesture.count=hc;
+    Audio.onHandCountChange(prevCount, hc);
 
     for(let i=0;i<hc;i++){
         const lm=results.multiHandLandmarks[i];
@@ -836,6 +1144,7 @@ function onResults(results){
 
         const sm=handSmooth[i];
         if(state!==sm.state){
+            Audio.onGestureChange(i, sm.state, state);
             sm.prevState=sm.state;sm.state=state;sm.stateTime=0;
             if(state!=='none')sm.scanT=0; 
         }else{sm.stateTime+=33}
@@ -906,6 +1215,11 @@ function animate(){
         s_fist+=((gesture.fist?1:0)-s_fist)*.04;
         worldGroup.scale.set(s_scale,s_scale,s_scale);
         worldGroup.rotation.set(s_rotX,s_rotY,s_rotZ);
+
+        // Audio tick
+        const zDelta = zoomBaseDist ? (gesture.dist - zoomBaseDist) / Math.max(zoomBaseDist,0.01) : 0;
+        Audio.tick(dt, bothFists, gesture.count, null, zDelta);
+        if(currentMode==='vortex') Audio.setRotorPitch(Math.abs(s_rotZ)+Math.abs(s_rotX));
 
         activeWorld.up(dt);
 
