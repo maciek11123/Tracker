@@ -170,10 +170,14 @@ const Audio = (()=>{
         if(ctx) return;
         try{
             ctx=new(window.AudioContext||window.webkitAudioContext)();
-            master=ctx.createGain(); master.gain.value=0; // start silent
+            master=ctx.createGain(); master.gain.value=0;
             master.connect(ctx.destination);
             buildGraph();
         }catch(e){ctx=null;}
+    }
+
+    function resume(){
+        if(ctx && ctx.state==='suspended') ctx.resume();
     }
 
     function buildGraph(){
@@ -189,13 +193,13 @@ const Audio = (()=>{
         osc1=ctx.createOscillator(); gain1=ctx.createGain();
         osc1.type='sine'; osc1.frequency.value=rootFreq;
         lfoG.connect(osc1.detune); // LFO modulates pitch
-        gain1.gain.value=0.04;
+        gain1.gain.value=0.5;
         osc1.connect(gain1); gain1.connect(master); osc1.start(t);
 
         // Osc2 — perfect fifth above root (×1.5)
         osc2=ctx.createOscillator(); gain2=ctx.createGain();
         osc2.type='sine'; osc2.frequency.value=rootFreq*1.5;
-        gain2.gain.value=0.02;
+        gain2.gain.value=0.3;
         osc2.connect(gain2); gain2.connect(master); osc2.start(t);
 
         // Osc3 — rotation layer, starts silent
@@ -228,12 +232,13 @@ const Audio = (()=>{
             lfoG.gain.setTargetAtTime(depth, t, 0.3);
         }
         // Fade in master when mode starts
-        if(master) master.gain.setTargetAtTime(soundEnabled?0.35:0, t, 0.6);
+        if(master) master.gain.setTargetAtTime(soundEnabled?0.8:0, t, 0.6);
     }
 
     // Called every frame from animate() with physics state
     function tick(dt, mode, fistVal, rotSpeed, scaleVal){
         if(!ctx||!soundEnabled) return;
+        if(ctx.state==='suspended') ctx.resume();
         const t=ctx.currentTime;
 
         // Extra smoothing on physics values — prevents audio zipper noise
@@ -247,10 +252,10 @@ const Audio = (()=>{
         // Fist: particles collapse → drone gets louder and slightly lower
         const fistBoost = sFist * 0.04;
         const baseVol = {
-            pond:0.04, flow:0.035, flow2:0.035, smear:0.045,
-            vortex:0.05, earth:0.03, nebula:0.02, storm:0.05,
-            shatter:0.04, alien:0.05, bubbles:0.03, fruits:0.03
-        }[mode]||0.04;
+            pond:0.5, flow:0.45, flow2:0.45, smear:0.5,
+            vortex:0.55, earth:0.4, nebula:0.35, storm:0.55,
+            shatter:0.5, alien:0.55, bubbles:0.4, fruits:0.4
+        }[mode]||0.5;
         gain1.gain.setTargetAtTime(baseVol + fistBoost, t, 0.08);
 
         // Fist pulls pitch down slightly (particles imploding = lower pitch)
@@ -274,7 +279,7 @@ const Audio = (()=>{
     function toggle(){
         if(!ctx) init();
         soundEnabled=!soundEnabled;
-        if(master) master.gain.setTargetAtTime(soundEnabled?0.35:0, ctx.currentTime, 0.2);
+        if(master) master.gain.setTargetAtTime(soundEnabled?0.8:0, ctx.currentTime, 0.2);
         if(soundEnabled) setMode(currentMode);
         const b=document.getElementById('btn-sound');
         if(b){b.classList.toggle('active',soundEnabled);b.textContent=soundEnabled?'🔊 Sound':'🔇 Sound';}
@@ -285,7 +290,7 @@ const Audio = (()=>{
     function onGestureChange(){}
     function onHandCountChange(){}
     function onBothFists(){}
-    function startAmbient(mode){ setMode(mode); }
+    function startAmbient(mode){ resume(); setMode(mode); }
     function stopAmbient(){}
 
     return{init, startAmbient, stopAmbient, setMode, tick,
