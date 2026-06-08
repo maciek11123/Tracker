@@ -141,164 +141,155 @@ let zoomBaseDist=null,zoomBaseScale=1,wasTwoHands=false;
 
 
 // ═══════════════════════════════════════════════════
-//  AUDIO ENGINE  — ambient drone + debounced SFX
+//  AUDIO ENGINE — particle-physics driven, not hand-event driven
+//  All sound comes from what the particles ARE doing:
+//  rotation speed, fist collapse, wave frequency, mode ambience.
+//  Zero hand/gesture event sounds.
 // ═══════════════════════════════════════════════════
 const Audio = (()=>{
-    let ctx=null, masterGain=null, ambientOscs=[], soundEnabled=true;
-    let rotorOsc=null, rotorGain=null;
-    // Root frequency of current ambient — SFX tune to this
+    let ctx=null, master=null, soundEnabled=true;
+
+    // Running oscillators — always on, modulated each frame
+    let osc1=null, gain1=null;   // primary drone (root)
+    let osc2=null, gain2=null;   // fifth / texture
+    let osc3=null, gain3=null;   // rotation layer — pitch tracks rotation speed
+    let lfo=null,  lfoG=null;    // LFO modulating osc1 detune
+
+    // Smoothed physics values for audio (extra smoothing so no pops)
+    let sFist=0, sRot=0, sScale=1, sTime=0;
+
+    // Mode root frequencies
+    const ROOTS={
+        pond:55, flow:44, flow2:44, smear:60, vortex:35,
+        earth:55, nebula:110, storm:41, shatter:82,
+        alien:55, bubbles:110, fruits:82
+    };
     let rootFreq=55;
-    // Debounce timers — ms since last fire
-    let lastHandSfx=0, lastGestureSfx=0, lastRotorChange=0;
-    const HAND_DEBOUNCE=1500;   // hand appear/disappear: 1.5s apart minimum
-    const GESTURE_DEBOUNCE=800; // gesture SFX: 0.8s apart minimum
-    const ROTOR_DEBOUNCE=400;
 
     function init(){
         if(ctx) return;
         try{
             ctx=new(window.AudioContext||window.webkitAudioContext)();
-            masterGain=ctx.createGain();
-            masterGain.gain.value=0.35;
-            masterGain.connect(ctx.destination);
+            master=ctx.createGain(); master.gain.value=0; // start silent
+            master.connect(ctx.destination);
+            buildGraph();
         }catch(e){ctx=null;}
     }
 
-    function ok(){return soundEnabled&&ctx&&ctx.state!=='closed';}
-    function ms(){return performance.now();}
+    function buildGraph(){
+        if(!ctx) return;
+        const t=ctx.currentTime;
 
-    // Soft sine tone tuned to ambient root (harmonics of rootFreq)
-    function tone(mult, dur, vol, attack=0.06){
-        if(!ok()) return;
-        const freq = rootFreq * mult;
-        try{
-            const o=ctx.createOscillator(), g=ctx.createGain();
-            o.type='sine'; o.frequency.value=freq;
-            // Soft attack, exponential decay
-            g.gain.setValueAtTime(0, ctx.currentTime);
-            g.gain.linearRampToValueAtTime(vol, ctx.currentTime+attack);
-            g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+dur);
-            o.connect(g); g.connect(masterGain);
-            o.start(); o.stop(ctx.currentTime+dur+0.1);
-        }catch(e){}
+        // LFO — slow wobble on pitch
+        lfo=ctx.createOscillator(); lfoG=ctx.createGain();
+        lfo.frequency.value=0.2; lfoG.gain.value=8; // ±8 cents
+        lfo.connect(lfoG); lfo.start(t);
+
+        // Osc1 — root drone
+        osc1=ctx.createOscillator(); gain1=ctx.createGain();
+        osc1.type='sine'; osc1.frequency.value=rootFreq;
+        lfoG.connect(osc1.detune); // LFO modulates pitch
+        gain1.gain.value=0.04;
+        osc1.connect(gain1); gain1.connect(master); osc1.start(t);
+
+        // Osc2 — perfect fifth above root (×1.5)
+        osc2=ctx.createOscillator(); gain2=ctx.createGain();
+        osc2.type='sine'; osc2.frequency.value=rootFreq*1.5;
+        gain2.gain.value=0.02;
+        osc2.connect(gain2); gain2.connect(master); osc2.start(t);
+
+        // Osc3 — rotation layer, starts silent
+        osc3=ctx.createOscillator(); gain3=ctx.createGain();
+        osc3.type='sine'; osc3.frequency.value=rootFreq*2;
+        gain3.gain.value=0;
+        osc3.connect(gain3); gain3.connect(master); osc3.start(t);
     }
 
-    // ── Ambient — two sine oscillators per mode ──────
-    // Root freqs chosen so harmonics land on musical intervals
-    const MODES={
-        pond:55, flow:40, flow2:40, smear:60, vortex:35,
-        earth:55, nebula:110, storm:50, shatter:90,
-        alien:55, bubbles:110, fruits:82
-    };
-
-    function startAmbient(mode){
-        stopAmbient();
-        if(!ok()) return;
-        rootFreq=MODES[mode]||55;
-        // Root + perfect fifth (×1.5) — always consonant with SFX
-        [rootFreq, rootFreq*1.5].forEach((f,i)=>{
-            try{
-                const o=ctx.createOscillator(), g=ctx.createGain();
-                o.type='sine';
-                o.frequency.value=f;
-                o.detune.value=(i===1)?-6:6; // tiny detune for warmth
-                g.gain.setValueAtTime(0, ctx.currentTime);
-                g.gain.linearRampToValueAtTime(0.05-(i*0.01), ctx.currentTime+2.5);
-                o.connect(g); g.connect(masterGain);
-                o.start();
-                ambientOscs.push({o,g});
-            }catch(e){}
-        });
-    }
-
-    function stopAmbient(){
-        ambientOscs.forEach(({o,g})=>{
-            try{
-                if(!ctx) return;
-                g.gain.setValueAtTime(g.gain.value, ctx.currentTime);
-                g.gain.linearRampToValueAtTime(0, ctx.currentTime+0.8);
-                o.stop(ctx.currentTime+0.9);
-            }catch(e){}
-        });
-        ambientOscs=[];
-    }
-
-    // ── SFX — all tuned to rootFreq harmonics ───────
-
-    // Hand appear: gentle rising octave (×2, ×4)
-    function sfxHandAppear(){
-        tone(2, 0.4, 0.07);
-        setTimeout(()=>tone(4, 0.3, 0.05), 180);
-    }
-
-    // Fist: deep sub — root/2 with slow attack so it blends not pops
-    function sfxFist(){
-        tone(0.5, 0.6, 0.12, 0.12);   // sub octave, slow attack
-        tone(1,   0.4, 0.06, 0.08);   // root, softer
-    }
-
-    // Fist release: soft upward resolve to 5th
-    function sfxRelease(){
-        tone(1.5, 0.35, 0.06, 0.08);
-    }
-
-    // ── Hooks ────────────────────────────────────────
-    function onHandCountChange(prev, next){
-        if(!ok()) return;
-        const now=ms();
-        if(next>prev && now-lastHandSfx>HAND_DEBOUNCE){
-            sfxHandAppear(); lastHandSfx=now;
+    function setMode(mode){
+        if(!ctx) return;
+        rootFreq = ROOTS[mode]||55;
+        const t=ctx.currentTime;
+        // Glide all oscillators to new root over 1.5s — smooth transition
+        if(osc1) osc1.frequency.setTargetAtTime(rootFreq,       t, 0.5);
+        if(osc2) osc2.frequency.setTargetAtTime(rootFreq*1.5,   t, 0.5);
+        if(osc3) osc3.frequency.setTargetAtTime(rootFreq*2,     t, 0.5);
+        if(lfo){
+            // LFO speed varies by mode — slow for pond, faster for storm/vortex
+            const lfoSpeed={pond:0.12,flow:0.18,flow2:0.18,smear:0.15,vortex:0.35,
+                            storm:0.6,shatter:0.4,nebula:0.08,earth:0.1,alien:0.25,
+                            bubbles:0.2,fruits:0.2}[mode]||0.2;
+            lfo.frequency.setTargetAtTime(lfoSpeed, t, 0.3);
         }
-        // No disappear sound — MediaPipe drops hands too often
-    }
-
-    function onGestureChange(prevState, newState){
-        if(!ok()) return;
-        const now=ms();
-        if(now-lastGestureSfx<GESTURE_DEBOUNCE) return; // debounce
-        if(newState==='fist' && prevState!=='fist'){
-            sfxFist(); lastGestureSfx=now;
-        } else if(prevState==='fist' && newState!=='fist'){
-            sfxRelease(); lastGestureSfx=now;
+        // LFO depth varies — pond=gentle, storm=wild
+        if(lfoG){
+            const depth={pond:5,flow:8,flow2:8,smear:6,vortex:12,
+                         storm:20,shatter:15,nebula:3,earth:4,alien:18,
+                         bubbles:6,fruits:6}[mode]||8;
+            lfoG.gain.setTargetAtTime(depth, t, 0.3);
         }
-        // No peace sound — too noisy with V-sign flicker
+        // Fade in master when mode starts
+        if(master) master.gain.setTargetAtTime(soundEnabled?0.35:0, t, 0.6);
     }
 
-    // Rotation hum — root freq sawtooth, very soft
-    function onBothFists(active){
-        const now=ms();
-        if(now-lastRotorChange<ROTOR_DEBOUNCE) return;
-        lastRotorChange=now;
-        if(active && !rotorOsc){
-            try{
-                rotorOsc=ctx.createOscillator(); rotorGain=ctx.createGain();
-                rotorOsc.type='sine'; rotorOsc.frequency.value=rootFreq*0.5;
-                rotorGain.gain.setValueAtTime(0,ctx.currentTime);
-                rotorGain.gain.linearRampToValueAtTime(0.05,ctx.currentTime+0.4);
-                rotorOsc.connect(rotorGain); rotorGain.connect(masterGain);
-                rotorOsc.start();
-            }catch(e){rotorOsc=null;}
-        } else if(!active && rotorOsc){
-            try{
-                rotorGain.gain.linearRampToValueAtTime(0,ctx.currentTime+0.5);
-                rotorOsc.stop(ctx.currentTime+0.55);
-            }catch(e){}
-            rotorOsc=null; rotorGain=null;
-        }
-    }
+    // Called every frame from animate() with physics state
+    function tick(dt, mode, fistVal, rotSpeed, scaleVal){
+        if(!ctx||!soundEnabled) return;
+        const t=ctx.currentTime;
 
-    function onModeSwitch(){} // silence — was too loud/jarring
+        // Extra smoothing on physics values — prevents audio zipper noise
+        sFist  += (fistVal  - sFist ) * 0.04;
+        sRot   += (rotSpeed - sRot  ) * 0.03;
+        sScale += (scaleVal - sScale) * 0.03;
+
+        if(!osc1) return;
+
+        // ── Osc1 gain — mode-specific base + fist compression ──
+        // Fist: particles collapse → drone gets louder and slightly lower
+        const fistBoost = sFist * 0.04;
+        const baseVol = {
+            pond:0.04, flow:0.035, flow2:0.035, smear:0.045,
+            vortex:0.05, earth:0.03, nebula:0.02, storm:0.05,
+            shatter:0.04, alien:0.05, bubbles:0.03, fruits:0.03
+        }[mode]||0.04;
+        gain1.gain.setTargetAtTime(baseVol + fistBoost, t, 0.08);
+
+        // Fist pulls pitch down slightly (particles imploding = lower pitch)
+        osc1.frequency.setTargetAtTime(rootFreq * (1 - sFist*0.08), t, 0.1);
+        osc2.frequency.setTargetAtTime(rootFreq * 1.5 * (1 - sFist*0.04), t, 0.1);
+
+        // ── Osc3 — rotation layer ──
+        // Only audible when world is actually rotating (bothFists spin)
+        // Pitch rises with rotation speed — feels like a gyroscope winding up
+        const rotVol = Math.min(sRot * 0.15, 0.05);
+        const rotPitch = rootFreq * 2 * (1 + sRot * 1.2);
+        gain3.gain.setTargetAtTime(rotVol, t, 0.06);
+        osc3.frequency.setTargetAtTime(rotPitch, t, 0.08);
+
+        // ── Osc2 gain — zoom/scale layer ──
+        // Scale > 1 (zoom in) brightens the fifth; scale < 1 dims it
+        const scaleNorm = Math.max(0, sScale - 1); // 0 at default, positive when zoomed
+        gain2.gain.setTargetAtTime(0.02 + scaleNorm * 0.025, t, 0.1);
+    }
 
     function toggle(){
         if(!ctx) init();
         soundEnabled=!soundEnabled;
-        if(masterGain) masterGain.gain.setTargetAtTime(soundEnabled?0.35:0, ctx.currentTime, 0.15);
-        if(soundEnabled) startAmbient(currentMode); else stopAmbient();
+        if(master) master.gain.setTargetAtTime(soundEnabled?0.35:0, ctx.currentTime, 0.2);
+        if(soundEnabled) setMode(currentMode);
         const b=document.getElementById('btn-sound');
         if(b){b.classList.toggle('active',soundEnabled);b.textContent=soundEnabled?'🔊 Sound':'🔇 Sound';}
     }
 
-    return{init,startAmbient,stopAmbient,onModeSwitch,onGestureChange,onHandCountChange,onBothFists,toggle};
+    // Stubs for old hook calls — do nothing now
+    function onModeSwitch(){}
+    function onGestureChange(){}
+    function onHandCountChange(){}
+    function onBothFists(){}
+    function startAmbient(mode){ setMode(mode); }
+    function stopAmbient(){}
+
+    return{init, startAmbient, stopAmbient, setMode, tick,
+           onModeSwitch, onGestureChange, onHandCountChange, onBothFists, toggle};
 })();
 window.toggleSound=()=>Audio.toggle();
 
@@ -1077,7 +1068,9 @@ function animate(){
         worldGroup.scale.set(s_scale,s_scale,s_scale);
         worldGroup.rotation.set(s_rotX,s_rotY,s_rotZ);
 
-        Audio.onBothFists(bothFists);
+        // Physics-driven audio: rotation magnitude, fist, scale
+        const rotMag=Math.sqrt(s_rotX*s_rotX+s_rotY*s_rotY+s_rotZ*s_rotZ);
+        Audio.tick(dt, currentMode, s_fist, rotMag, s_scale);
         activeWorld.up(dt);
 
         const TIPS=[4,8,12,16,20];
