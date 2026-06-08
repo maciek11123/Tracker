@@ -353,7 +353,9 @@ const fadeMat=new THREE.MeshBasicMaterial({color:0x030303,transparent:true,opaci
 fadeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),fadeMat));
 const camera=new THREE.PerspectiveCamera(75,W/H,0.1,2000);
 const renderer=new THREE.WebGLRenderer({canvas:threeCanvas,alpha:true,antialias:false});
-renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2.5));renderer.setClearAlpha(1);
+renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2.0));renderer.setClearAlpha(1);
+threeCanvas.addEventListener('webglcontextlost',(e)=>{e.preventDefault();console.warn('WebGL context lost — will restore');},false);
+threeCanvas.addEventListener('webglcontextrestored',()=>{console.warn('WebGL context restored');if(currentCategory==='world'&&currentMode)setMode(currentMode,'world');},false);
 
 let orbit={theta:0,phi:Math.PI/3,radius:16},orbitTarget=new THREE.Vector3(0,0,0);
 function syncOrbit(){var d=camera.position.clone().sub(orbitTarget);orbit.radius=d.length();orbit.phi=Math.acos(Math.max(-1,Math.min(1,d.y/orbit.radius)));orbit.theta=Math.atan2(d.x,d.z)}
