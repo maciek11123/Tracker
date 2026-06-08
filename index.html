@@ -141,63 +141,69 @@ let zoomBaseDist=null,zoomBaseScale=1,wasTwoHands=false;
 
 
 // ═══════════════════════════════════════════════════
-//  AUDIO ENGINE  — minimal, event-only, no loops
+//  AUDIO ENGINE  — ambient drone + debounced SFX
 // ═══════════════════════════════════════════════════
 const Audio = (()=>{
     let ctx=null, masterGain=null, ambientOscs=[], soundEnabled=true;
-    let prevHandCount=0, rotorOsc=null, rotorGain=null;
+    let rotorOsc=null, rotorGain=null;
+    // Root frequency of current ambient — SFX tune to this
+    let rootFreq=55;
+    // Debounce timers — ms since last fire
+    let lastHandSfx=0, lastGestureSfx=0, lastRotorChange=0;
+    const HAND_DEBOUNCE=1500;   // hand appear/disappear: 1.5s apart minimum
+    const GESTURE_DEBOUNCE=800; // gesture SFX: 0.8s apart minimum
+    const ROTOR_DEBOUNCE=400;
 
     function init(){
         if(ctx) return;
         try{
-            ctx = new (window.AudioContext||window.webkitAudioContext)();
-            masterGain = ctx.createGain();
-            masterGain.gain.value = 0.4;
+            ctx=new(window.AudioContext||window.webkitAudioContext)();
+            masterGain=ctx.createGain();
+            masterGain.gain.value=0.35;
             masterGain.connect(ctx.destination);
-        }catch(e){ ctx=null; }
+        }catch(e){ctx=null;}
     }
 
-    function ok(){ return soundEnabled && ctx && ctx.state!=='closed'; }
+    function ok(){return soundEnabled&&ctx&&ctx.state!=='closed';}
+    function ms(){return performance.now();}
 
-    function tone(freq, dur, vol, type='sine'){
+    // Soft sine tone tuned to ambient root (harmonics of rootFreq)
+    function tone(mult, dur, vol, attack=0.06){
         if(!ok()) return;
+        const freq = rootFreq * mult;
         try{
             const o=ctx.createOscillator(), g=ctx.createGain();
-            o.type=type; o.frequency.value=freq;
+            o.type='sine'; o.frequency.value=freq;
+            // Soft attack, exponential decay
             g.gain.setValueAtTime(0, ctx.currentTime);
-            g.gain.linearRampToValueAtTime(vol, ctx.currentTime+0.01);
+            g.gain.linearRampToValueAtTime(vol, ctx.currentTime+attack);
             g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+dur);
             o.connect(g); g.connect(masterGain);
-            o.start(); o.stop(ctx.currentTime+dur+0.05);
+            o.start(); o.stop(ctx.currentTime+dur+0.1);
         }catch(e){}
     }
 
-    // ── Gesture SFX — one-shot only ─────────────────
-    function onHandAppear(){ tone(523,0.25,0.12); setTimeout(()=>tone(784,0.2,0.08),100); }
-    function onHandDisappear(){ tone(300,0.3,0.1); }
-    function onFistForm(){ tone(80,0.25,0.3,'sawtooth'); tone(160,0.15,0.1,'sine'); }
-    function onFistRelease(){ tone(160,0.2,0.08); }
-    function onPeace(){ tone(1047,0.15,0.06); setTimeout(()=>tone(1319,0.12,0.05),60); }
-    function onModeSwitch(){ tone(440,0.08,0.15); }
+    // ── Ambient — two sine oscillators per mode ──────
+    // Root freqs chosen so harmonics land on musical intervals
+    const MODES={
+        pond:55, flow:40, flow2:40, smear:60, vortex:35,
+        earth:55, nebula:110, storm:50, shatter:90,
+        alien:55, bubbles:110, fruits:82
+    };
 
-    // ── Ambient — single soft drone, fades in/out ───
     function startAmbient(mode){
         stopAmbient();
         if(!ok()) return;
-        // One drone frequency per mode family
-        const freqs = {
-            pond:[55,110], flow:[40,80], flow2:[40,80],
-            smear:[60,90], vortex:[35,70], earth:[55,82],
-            nebula:[880,1100], storm:[50,75], shatter:[90,135],
-            alien:[55,73], bubbles:[330,440], fruits:[220,330]
-        };
-        const ff = freqs[mode]||[55,110];
-        ff.forEach((f,i)=>{
+        rootFreq=MODES[mode]||55;
+        // Root + perfect fifth (×1.5) — always consonant with SFX
+        [rootFreq, rootFreq*1.5].forEach((f,i)=>{
             try{
                 const o=ctx.createOscillator(), g=ctx.createGain();
-                o.type='sine'; o.frequency.value=f; o.detune.value=(i-0.5)*8;
+                o.type='sine';
+                o.frequency.value=f;
+                o.detune.value=(i===1)?-6:6; // tiny detune for warmth
                 g.gain.setValueAtTime(0, ctx.currentTime);
-                g.gain.linearRampToValueAtTime(0.04, ctx.currentTime+2.0);
+                g.gain.linearRampToValueAtTime(0.05-(i*0.01), ctx.currentTime+2.5);
                 o.connect(g); g.connect(masterGain);
                 o.start();
                 ambientOscs.push({o,g});
@@ -208,61 +214,91 @@ const Audio = (()=>{
     function stopAmbient(){
         ambientOscs.forEach(({o,g})=>{
             try{
+                if(!ctx) return;
                 g.gain.setValueAtTime(g.gain.value, ctx.currentTime);
                 g.gain.linearRampToValueAtTime(0, ctx.currentTime+0.8);
-                o.stop(ctx.currentTime+0.85);
+                o.stop(ctx.currentTime+0.9);
             }catch(e){}
         });
         ambientOscs=[];
     }
 
-    // ── Rotation hum ────────────────────────────────
-    function startRotor(){
-        if(!ok()||rotorOsc) return;
-        try{
-            rotorOsc=ctx.createOscillator(); rotorGain=ctx.createGain();
-            rotorOsc.type='sawtooth'; rotorOsc.frequency.value=55;
-            rotorGain.gain.setValueAtTime(0,ctx.currentTime);
-            rotorGain.gain.linearRampToValueAtTime(0.06,ctx.currentTime+0.2);
-            rotorOsc.connect(rotorGain); rotorGain.connect(masterGain);
-            rotorOsc.start();
-        }catch(e){ rotorOsc=null; }
-    }
-    function stopRotor(){
-        if(!rotorOsc) return;
-        try{ rotorGain.gain.linearRampToValueAtTime(0,ctx.currentTime+0.3); rotorOsc.stop(ctx.currentTime+0.35); }catch(e){}
-        rotorOsc=null; rotorGain=null;
+    // ── SFX — all tuned to rootFreq harmonics ───────
+
+    // Hand appear: gentle rising octave (×2, ×4)
+    function sfxHandAppear(){
+        tone(2, 0.4, 0.07);
+        setTimeout(()=>tone(4, 0.3, 0.05), 180);
     }
 
-    // ── Hooks called from app ───────────────────────
+    // Fist: deep sub — root/2 with slow attack so it blends not pops
+    function sfxFist(){
+        tone(0.5, 0.6, 0.12, 0.12);   // sub octave, slow attack
+        tone(1,   0.4, 0.06, 0.08);   // root, softer
+    }
+
+    // Fist release: soft upward resolve to 5th
+    function sfxRelease(){
+        tone(1.5, 0.35, 0.06, 0.08);
+    }
+
+    // ── Hooks ────────────────────────────────────────
     function onHandCountChange(prev, next){
         if(!ok()) return;
-        if(next>prev) onHandAppear();
-        else if(next<prev) onHandDisappear();
-        prevHandCount=next;
+        const now=ms();
+        if(next>prev && now-lastHandSfx>HAND_DEBOUNCE){
+            sfxHandAppear(); lastHandSfx=now;
+        }
+        // No disappear sound — MediaPipe drops hands too often
     }
+
     function onGestureChange(prevState, newState){
         if(!ok()) return;
-        if(newState==='fist' && prevState!=='fist') onFistForm();
-        else if(prevState==='fist' && newState!=='fist') onFistRelease();
-        else if(newState==='peace') onPeace();
+        const now=ms();
+        if(now-lastGestureSfx<GESTURE_DEBOUNCE) return; // debounce
+        if(newState==='fist' && prevState!=='fist'){
+            sfxFist(); lastGestureSfx=now;
+        } else if(prevState==='fist' && newState!=='fist'){
+            sfxRelease(); lastGestureSfx=now;
+        }
+        // No peace sound — too noisy with V-sign flicker
     }
-    function onBothFists(active){ active ? startRotor() : stopRotor(); }
+
+    // Rotation hum — root freq sawtooth, very soft
+    function onBothFists(active){
+        const now=ms();
+        if(now-lastRotorChange<ROTOR_DEBOUNCE) return;
+        lastRotorChange=now;
+        if(active && !rotorOsc){
+            try{
+                rotorOsc=ctx.createOscillator(); rotorGain=ctx.createGain();
+                rotorOsc.type='sine'; rotorOsc.frequency.value=rootFreq*0.5;
+                rotorGain.gain.setValueAtTime(0,ctx.currentTime);
+                rotorGain.gain.linearRampToValueAtTime(0.05,ctx.currentTime+0.4);
+                rotorOsc.connect(rotorGain); rotorGain.connect(masterGain);
+                rotorOsc.start();
+            }catch(e){rotorOsc=null;}
+        } else if(!active && rotorOsc){
+            try{
+                rotorGain.gain.linearRampToValueAtTime(0,ctx.currentTime+0.5);
+                rotorOsc.stop(ctx.currentTime+0.55);
+            }catch(e){}
+            rotorOsc=null; rotorGain=null;
+        }
+    }
+
+    function onModeSwitch(){} // silence — was too loud/jarring
 
     function toggle(){
         if(!ctx) init();
         soundEnabled=!soundEnabled;
-        if(masterGain){
-            masterGain.gain.setTargetAtTime(soundEnabled?0.4:0, ctx.currentTime, 0.1);
-        }
-        if(soundEnabled) startAmbient(currentMode);
-        else stopAmbient();
+        if(masterGain) masterGain.gain.setTargetAtTime(soundEnabled?0.35:0, ctx.currentTime, 0.15);
+        if(soundEnabled) startAmbient(currentMode); else stopAmbient();
         const b=document.getElementById('btn-sound');
-        if(b){ b.classList.toggle('active',soundEnabled); b.textContent=soundEnabled?'🔊 Sound':'🔇 Sound'; }
+        if(b){b.classList.toggle('active',soundEnabled);b.textContent=soundEnabled?'🔊 Sound':'🔇 Sound';}
     }
 
-    return { init, startAmbient, stopAmbient, onModeSwitch, onGestureChange,
-             onHandCountChange, onBothFists, toggle };
+    return{init,startAmbient,stopAmbient,onModeSwitch,onGestureChange,onHandCountChange,onBothFists,toggle};
 })();
 window.toggleSound=()=>Audio.toggle();
 
