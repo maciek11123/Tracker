@@ -588,40 +588,54 @@ smear(){
 },
 
 vortex(){
-    // ── Cosmic Abyss Vortex — 80k GPU particles, fully shader-driven ──
-    var PC = Math.floor(80000*(currentRes==='low'?0.4:currentRes==='high'?1.8:0.9));
+    // ── Cosmic Abyss — viewed DOWN the vortex axis like the reference ──
+    // Camera at Z=180 looking at origin. Strands spiral inward on XY plane,
+    // offset along Z so depth creates the tunnel illusion.
+    var PC = Math.floor(80000*(currentRes==='low'?0.5:currentRes==='high'?1.6:1.0));
     var geo = new THREE.BufferGeometry();
+
     var positions = new Float32Array(PC*3);
-    var aAngle    = new Float32Array(PC);
-    var aRadius   = new Float32Array(PC);
-    var aSpeed    = new Float32Array(PC);
+    var aAngle    = new Float32Array(PC);  // base angle
+    var aRadius   = new Float32Array(PC);  // rest radius on XY
+    var aSpeed    = new Float32Array(PC);  // per-particle angular speed
 
     var numStrands = 200;
-    var pps = Math.floor(PC/numStrands);
-    for(var i=0;i<PC;i++){
-        var sid = Math.floor(i/pps);
-        var t   = (i%pps)/pps;
-        var baseRadius = 25 + Math.pow(sid/numStrands,1.2)*200;
-        var radius = baseRadius + (Math.random()*3-1.5);
-        var angle  = t*Math.PI*40 + (sid*13.37);
-        var z      = (t-0.5)*500;
+    var pps = Math.floor(PC / numStrands);
+
+    for(var i = 0; i < PC; i++){
+        var sid = Math.floor(i / pps);
+        var t   = (i % pps) / pps;  // 0→1 along strand
+
+        // Radius: outer strands are wide, inner are tight — power curve
+        var baseRadius = 8 + Math.pow(sid / numStrands, 1.1) * 240;
+        var radius = baseRadius + (Math.random()*2 - 1);
+
+        // Angle winds many times — creates spiral strands
+        var angle = t * Math.PI * 50 + (sid * (Math.PI * 2 / numStrands) * 7);
+
+        // Z: slight depth offset so strands have 3D thickness,
+        // but mostly flat — we're looking DOWN the axis
+        var z = (Math.random() - 0.5) * 6 + t * 18;
+
         aRadius[i] = radius;
         aAngle[i]  = angle;
-        aSpeed[i]  = 0.01+(1-(sid/numStrands))*0.05;
-        positions[i*3]   = Math.cos(angle)*radius;
-        positions[i*3+1] = Math.sin(angle)*radius;
+        aSpeed[i]  = 0.008 + (1.0 - sid/numStrands) * 0.06; // inner = faster
+
+        positions[i*3]   = Math.cos(angle) * radius;
+        positions[i*3+1] = Math.sin(angle) * radius;
         positions[i*3+2] = z;
     }
-    geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
-    geo.setAttribute('aAngle',   new THREE.BufferAttribute(aAngle,1));
-    geo.setAttribute('aRadius',  new THREE.BufferAttribute(aRadius,1));
-    geo.setAttribute('aSpeed',   new THREE.BufferAttribute(aSpeed,1));
+
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('aAngle',   new THREE.BufferAttribute(aAngle, 1));
+    geo.setAttribute('aRadius',  new THREE.BufferAttribute(aRadius, 1));
+    geo.setAttribute('aSpeed',   new THREE.BufferAttribute(aSpeed, 1));
 
     var mat = new THREE.ShaderMaterial({
         uniforms:{
             uTime:     {value:0},
-            uBendX:    {value:0.15},
-            uBendY:    {value:0.10},
+            uBendX:    {value:0.0},
+            uBendY:    {value:0.0},
             uSpeed:    {value:1.0},
             uDensity:  {value:1.0},
             uWaveFreq: {value:1.5},
@@ -634,85 +648,102 @@ vortex(){
             attribute float aAngle,aRadius,aSpeed;
             varying float vRadius;
             void main(){
-                float grav   = uGravity*15.0*(1.0+uFist*4.0);
-                float baseR  = aRadius*uDensity;
-                float funnel = smoothstep(-220.0,220.0,position.z);
-                float curR   = max(baseR-(grav*funnel),2.0);
-                float accel  = 1.0+uAccel*(80.0/max(curR,1.0));
-                float ang    = aAngle+uTime*(aSpeed*uSpeed*accel);
-                float w1     = sin(curR*0.1-uTime*uWaveFreq)*6.0;
-                float w2     = cos(aAngle*3.0+uTime)*4.0*(curR/100.0);
-                float wave   = w1+w2;
+                // Gravity pulls strands inward (fist intensifies it)
+                float gravPull  = uGravity * 12.0 * (1.0 + uFist * 5.0);
+                float baseR     = aRadius * uDensity;
+                // Funnel: inward pull strongest at small radii
+                float curR      = max(baseR - gravPull * (80.0 / max(baseR, 1.0)), 1.5);
+
+                // Differential rotation: inner spins faster
+                float accelMult = 1.0 + uAccel * (60.0 / max(curR, 1.0));
+                float ang       = aAngle + uTime * aSpeed * uSpeed * accelMult;
+
+                // Subtle radial wave
+                float wave = sin(curR * 0.08 - uTime * uWaveFreq) * 3.5
+                           + cos(aAngle * 4.0 + uTime * 0.7) * 2.0 * (curR / 120.0);
+
                 vec3 pos;
-                pos.x = cos(ang)*(curR+wave) + uBendX*(position.z*0.012);
-                pos.y = sin(ang)*(curR+wave) + uBendY*(position.z*0.012);
-                pos.z = position.z + sin(uTime*3.0+curR*0.05)*12.0;
+                pos.x = cos(ang) * (curR + wave);
+                pos.y = sin(ang) * (curR + wave);
+                pos.z = position.z;
+
+                // Hand bend tilts the whole disc
+                pos.x += uBendX * 18.0;
+                pos.y += uBendY * 18.0;
+
                 vRadius = curR;
-                vec4 mv = modelViewMatrix*vec4(pos,1.0);
-                gl_PointSize = clamp(650.0/-mv.z, 0.5, 6.0);
-                gl_Position  = projectionMatrix*mv;
+                vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+                // Size: bigger near core, attenuated by depth
+                float sz = (3.5 + 80.0 / max(curR, 4.0));
+                gl_PointSize = clamp(sz * 220.0 / -mv.z, 0.3, 5.0);
+                gl_Position  = projectionMatrix * mv;
             }`,
         fragmentShader:`
             varying float vRadius;
             void main(){
-                vec2 xy = gl_PointCoord-0.5;
-                float a = exp(-dot(xy,xy)*35.0);
-                if(vRadius<4.0) discard;
-                vec3 cOuter = vec3(0.05,0.2,0.8);
-                vec3 cMid   = vec3(0.6,0.1,0.8);
-                vec3 cHot   = vec3(1.0,0.4,0.1);
-                vec3 cCore  = vec3(1.0,0.9,0.8);
-                vec3 col    = cOuter;
-                col = mix(cMid,  col, smoothstep(50.0,150.0,vRadius));
-                col = mix(cHot,  col, smoothstep(15.0,50.0,vRadius));
-                col = mix(cCore, col, smoothstep(4.0,15.0,vRadius));
-                gl_FragColor = vec4(col, a*0.9*smoothstep(4.0,12.0,vRadius));
+                vec2 xy = gl_PointCoord - 0.5;
+                float d  = dot(xy, xy) * 4.0;
+                if(d > 1.0) discard;
+                float a  = exp(-d * 6.0);
+
+                // Color ramp matching reference: blue outer → purple → orange hot → white core
+                vec3 cOuter = vec3(0.04, 0.15, 0.75);   // deep blue
+                vec3 cMid   = vec3(0.55, 0.08, 0.72);   // purple
+                vec3 cHot   = vec3(0.95, 0.38, 0.05);   // hot orange
+                vec3 cCore  = vec3(1.0,  0.92, 0.80);   // near-white
+
+                vec3 col = cOuter;
+                col = mix(col,  cMid,  smoothstep(120.0, 50.0, vRadius));
+                col = mix(col,  cHot,  smoothstep(50.0,  14.0, vRadius));
+                col = mix(col,  cCore, smoothstep(14.0,   3.0, vRadius));
+
+                float fade = smoothstep(1.5, 6.0, vRadius); // hide singularity hole
+                gl_FragColor = vec4(col, a * 0.85 * fade);
             }`,
-        transparent:true,depthWrite:false,blending:THREE.AdditiveBlending
+        transparent:true, depthWrite:false, blending:THREE.AdditiveBlending
     });
 
-    var pts = new THREE.Points(geo,mat);
-    scene.fog = new THREE.FogExp2(0x000000,0.0010);
+    var pts = new THREE.Points(geo, mat);
+    // Tilt slightly so spiral strands are visible (not perfectly face-on)
+    pts.rotation.x = 0.18;
+    scene.fog = new THREE.FogExp2(0x000000, 0.0008);
     worldGroup.add(pts);
 
-    // Smooth bend targets
-    var bendX=0.15,bendY=0.10,tBX=0.15,tBY=0.10;
+    var bendX=0, bendY=0, tBX=0, tBY=0;
 
-    // Read sliders
     function readSliders(){
-        mat.uniforms.uSpeed.value   =parseFloat(document.getElementById('v-speed')?.value||1);
-        mat.uniforms.uDensity.value =parseFloat(document.getElementById('v-density')?.value||1);
-        mat.uniforms.uWaveFreq.value=parseFloat(document.getElementById('v-wave')?.value||1.5);
-        mat.uniforms.uGravity.value =parseFloat(document.getElementById('v-gravity')?.value||1);
-        mat.uniforms.uAccel.value   =parseFloat(document.getElementById('v-accel')?.value||2);
+        mat.uniforms.uSpeed.value    = parseFloat(document.getElementById('v-speed')?.value   || 1);
+        mat.uniforms.uDensity.value  = parseFloat(document.getElementById('v-density')?.value || 1);
+        mat.uniforms.uWaveFreq.value = parseFloat(document.getElementById('v-wave')?.value    || 1.5);
+        mat.uniforms.uGravity.value  = parseFloat(document.getElementById('v-gravity')?.value || 1);
+        mat.uniforms.uAccel.value    = parseFloat(document.getElementById('v-accel')?.value   || 2);
     }
 
     return{
         m:[pts],
         dc(){
-            camera.position.set(0,0,210);
-            camera.lookAt(0,0,0);
-            orbitTarget.set(0,0,0);
+            // Look straight down the vortex axis
+            camera.position.set(0, 0, 180);
+            camera.lookAt(0, 0, 0);
+            orbitTarget.set(0, 0, 0);
             syncOrbit();
         },
-        bg:[0,0,0],
+        bg:[0, 0, 0],
         up(dt){
-            mat.uniforms.uTime.value = time;
-            mat.uniforms.uFist.value += (s_fist - mat.uniforms.uFist.value)*0.08;
-            bendX+=(tBX-bendX)*0.05;
-            bendY+=(tBY-bendY)*0.05;
-            mat.uniforms.uBendX.value=bendX;
-            mat.uniforms.uBendY.value=bendY;
-            // Slow autonomous Z-spin on the group when no hands
-            if(gesture.count===0) pts.rotation.z+=0.0008;
+            mat.uniforms.uTime.value  = time;
+            mat.uniforms.uFist.value += (s_fist - mat.uniforms.uFist.value) * 0.06;
+            bendX += (tBX - bendX) * 0.04;
+            bendY += (tBY - bendY) * 0.04;
+            mat.uniforms.uBendX.value = bendX;
+            mat.uniforms.uBendY.value = bendY;
+            // Gentle autonomous slow rotation when idle
+            if(gesture.count === 0) pts.rotation.z += 0.0006;
             readSliders();
         },
-        pm(wx,wz){
-            // wx/wz from y=0 plane: map to bend
-            tBX = wx*0.008;
-            tBY = -wz*0.008;
-        },
-        reset(){tBX=0.15;tBY=0.10;}
+        pm(wx, wz){
+            tBX =  wx * 0.006;
+            tBY = -wz * 0.006;
+        }
     };
 }
 }; // ── end Worlds
