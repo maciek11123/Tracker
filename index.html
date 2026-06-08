@@ -745,7 +745,10 @@ vortex(){
             mat.uniforms.uRepelX.value =repelX;
             mat.uniforms.uRepelY.value =repelY;
 
-            if(gesture.count===0) pts.rotation.z+=0.0006;
+            // Continuous rotation — always on, slightly faster with hands
+            var spinSpeed = gesture.count > 0 ? 0.0018 : 0.0008;
+            pts.rotation.z += spinSpeed;
+            pts.rotation.x += 0.00018;  // slow tilt wobble reveals the disc depth
             readSliders();
         },
         pm(){}
