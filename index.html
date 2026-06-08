@@ -77,11 +77,19 @@ video.cam-on{opacity:1}
         <div class="ctrl-group"><span>Rad</span><input type="range" id="s-rad" min="0.2" max="3" step="0.1" value="1"></div>
         <div class="ctrl-group"><span>Frc</span><input type="range" id="s-frc" min="0" max="3" step="0.1" value="1"></div>
     </div>
+    <div class="panel" id="vortex-opts" style="display:none;background:rgba(190,120,255,0.08);border-color:rgba(190,120,255,0.3)">
+        <div class="ctrl-group"><span style="color:#be78ff">Speed</span><input type="range" id="v-speed" min="0" max="3" step="0.1" value="1"></div>
+        <div class="ctrl-group"><span style="color:#be78ff">Density</span><input type="range" id="v-density" min="0.1" max="3" step="0.1" value="1"></div>
+        <div class="ctrl-group"><span style="color:#be78ff">Wave</span><input type="range" id="v-wave" min="0" max="5" step="0.1" value="1.5"></div>
+        <div class="ctrl-group"><span style="color:#ffb86c">Gravity</span><input type="range" id="v-gravity" min="0" max="5" step="0.1" value="1"></div>
+        <div class="ctrl-group"><span style="color:#ff5555">Accel</span><input type="range" id="v-accel" min="0" max="10" step="0.1" value="2"></div>
+    </div>
     <div class="panel">
         <button class="btn mode-btn active" id="btn-pond" onclick="setMode('pond','world')">Pond</button>
         <button class="btn mode-btn" id="btn-flow" onclick="setMode('flow','world')">Flow</button>
         <button class="btn mode-btn" id="btn-flow2" onclick="setMode('flow2','world')">Flow v2</button>
         <button class="btn mode-btn" id="btn-smear" onclick="setMode('smear','world')">Smear</button>
+        <button class="btn mode-btn" id="btn-vortex" onclick="setMode('vortex','world')" style="color:#be78ff">Vortex</button>
         <button class="btn mode-btn" id="btn-earth" onclick="setMode('earth','world')">Earth</button>
         <button class="btn mode-btn" id="btn-nebula" onclick="setMode('nebula','world')">Nebula</button>
         <button class="btn mode-btn" id="btn-storm" onclick="setMode('storm','world')">Storm</button>
@@ -577,8 +585,137 @@ smear(){
         pm(){},
         pmXY(wx,wy){imp.push({x:wx,y:wy,s:6,r:4.5});}
     };
+},
+
+vortex(){
+    // ── Cosmic Abyss Vortex — 80k GPU particles, fully shader-driven ──
+    var PC = Math.floor(80000*(currentRes==='low'?0.4:currentRes==='high'?1.8:0.9));
+    var geo = new THREE.BufferGeometry();
+    var positions = new Float32Array(PC*3);
+    var aAngle    = new Float32Array(PC);
+    var aRadius   = new Float32Array(PC);
+    var aSpeed    = new Float32Array(PC);
+
+    var numStrands = 200;
+    var pps = Math.floor(PC/numStrands);
+    for(var i=0;i<PC;i++){
+        var sid = Math.floor(i/pps);
+        var t   = (i%pps)/pps;
+        var baseRadius = 25 + Math.pow(sid/numStrands,1.2)*200;
+        var radius = baseRadius + (Math.random()*3-1.5);
+        var angle  = t*Math.PI*40 + (sid*13.37);
+        var z      = (t-0.5)*500;
+        aRadius[i] = radius;
+        aAngle[i]  = angle;
+        aSpeed[i]  = 0.01+(1-(sid/numStrands))*0.05;
+        positions[i*3]   = Math.cos(angle)*radius;
+        positions[i*3+1] = Math.sin(angle)*radius;
+        positions[i*3+2] = z;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
+    geo.setAttribute('aAngle',   new THREE.BufferAttribute(aAngle,1));
+    geo.setAttribute('aRadius',  new THREE.BufferAttribute(aRadius,1));
+    geo.setAttribute('aSpeed',   new THREE.BufferAttribute(aSpeed,1));
+
+    var mat = new THREE.ShaderMaterial({
+        uniforms:{
+            uTime:     {value:0},
+            uBendX:    {value:0.15},
+            uBendY:    {value:0.10},
+            uSpeed:    {value:1.0},
+            uDensity:  {value:1.0},
+            uWaveFreq: {value:1.5},
+            uGravity:  {value:1.0},
+            uAccel:    {value:2.0},
+            uFist:     {value:0.0}
+        },
+        vertexShader:`
+            uniform float uTime,uBendX,uBendY,uSpeed,uDensity,uWaveFreq,uGravity,uAccel,uFist;
+            attribute float aAngle,aRadius,aSpeed;
+            varying float vRadius;
+            void main(){
+                float grav   = uGravity*15.0*(1.0+uFist*4.0);
+                float baseR  = aRadius*uDensity;
+                float funnel = smoothstep(-220.0,220.0,position.z);
+                float curR   = max(baseR-(grav*funnel),2.0);
+                float accel  = 1.0+uAccel*(80.0/max(curR,1.0));
+                float ang    = aAngle+uTime*(aSpeed*uSpeed*accel);
+                float w1     = sin(curR*0.1-uTime*uWaveFreq)*6.0;
+                float w2     = cos(aAngle*3.0+uTime)*4.0*(curR/100.0);
+                float wave   = w1+w2;
+                vec3 pos;
+                pos.x = cos(ang)*(curR+wave) + uBendX*(position.z*0.012);
+                pos.y = sin(ang)*(curR+wave) + uBendY*(position.z*0.012);
+                pos.z = position.z + sin(uTime*3.0+curR*0.05)*12.0;
+                vRadius = curR;
+                vec4 mv = modelViewMatrix*vec4(pos,1.0);
+                gl_PointSize = clamp(650.0/-mv.z, 0.5, 6.0);
+                gl_Position  = projectionMatrix*mv;
+            }`,
+        fragmentShader:`
+            varying float vRadius;
+            void main(){
+                vec2 xy = gl_PointCoord-0.5;
+                float a = exp(-dot(xy,xy)*35.0);
+                if(vRadius<4.0) discard;
+                vec3 cOuter = vec3(0.05,0.2,0.8);
+                vec3 cMid   = vec3(0.6,0.1,0.8);
+                vec3 cHot   = vec3(1.0,0.4,0.1);
+                vec3 cCore  = vec3(1.0,0.9,0.8);
+                vec3 col    = cOuter;
+                col = mix(cMid,  col, smoothstep(50.0,150.0,vRadius));
+                col = mix(cHot,  col, smoothstep(15.0,50.0,vRadius));
+                col = mix(cCore, col, smoothstep(4.0,15.0,vRadius));
+                gl_FragColor = vec4(col, a*0.9*smoothstep(4.0,12.0,vRadius));
+            }`,
+        transparent:true,depthWrite:false,blending:THREE.AdditiveBlending
+    });
+
+    var pts = new THREE.Points(geo,mat);
+    scene.fog = new THREE.FogExp2(0x000000,0.0010);
+    worldGroup.add(pts);
+
+    // Smooth bend targets
+    var bendX=0.15,bendY=0.10,tBX=0.15,tBY=0.10;
+
+    // Read sliders
+    function readSliders(){
+        mat.uniforms.uSpeed.value   =parseFloat(document.getElementById('v-speed')?.value||1);
+        mat.uniforms.uDensity.value =parseFloat(document.getElementById('v-density')?.value||1);
+        mat.uniforms.uWaveFreq.value=parseFloat(document.getElementById('v-wave')?.value||1.5);
+        mat.uniforms.uGravity.value =parseFloat(document.getElementById('v-gravity')?.value||1);
+        mat.uniforms.uAccel.value   =parseFloat(document.getElementById('v-accel')?.value||2);
+    }
+
+    return{
+        m:[pts],
+        dc(){
+            camera.position.set(0,0,210);
+            camera.lookAt(0,0,0);
+            orbitTarget.set(0,0,0);
+            syncOrbit();
+        },
+        bg:[0,0,0],
+        up(dt){
+            mat.uniforms.uTime.value = time;
+            mat.uniforms.uFist.value += (s_fist - mat.uniforms.uFist.value)*0.08;
+            bendX+=(tBX-bendX)*0.05;
+            bendY+=(tBY-bendY)*0.05;
+            mat.uniforms.uBendX.value=bendX;
+            mat.uniforms.uBendY.value=bendY;
+            // Slow autonomous Z-spin on the group when no hands
+            if(gesture.count===0) pts.rotation.z+=0.0008;
+            readSliders();
+        },
+        pm(wx,wz){
+            // wx/wz from y=0 plane: map to bend
+            tBX = wx*0.008;
+            tBY = -wz*0.008;
+        },
+        reset(){tBX=0.15;tBY=0.10;}
+    };
 }
-};
+
 
 // ═══════════════════════════════════════════════════
 //  GAMES
@@ -598,11 +735,13 @@ window.setMode=function(mode,cat){
     document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
     const btn=document.getElementById(`btn-${mode}`);if(btn)btn.classList.add('active');
     document.getElementById('flow-opts').style.display=(mode==='flow'||mode==='flow2')?'flex':'none';
+    document.getElementById('vortex-opts').style.display=(mode==='vortex')?'flex':'none';
     if(cat==='world'){
         threeCanvas.style.display='block';gameCanvas.style.display='none';document.getElementById('game-ui').style.display='none';
         while(worldGroup.children.length)worldGroup.remove(worldGroup.children[0]);
         s_scale=1;s_rotZ=0;s_rotX=0;s_rotY=0;worldGroup.scale.set(1,1,1);worldGroup.rotation.set(0,0,0);
         activeWorld=Worlds[mode]();activeWorld.dc();let bg=activeWorld.bg;renderer.setClearColor(new THREE.Color(bg[0],bg[1],bg[2]),1);
+        if(mode!=='vortex') scene.fog=null;
     }else{
         threeCanvas.style.display='none';gameCanvas.style.display='block';
         if(uiVisible)document.getElementById('game-ui').style.display='block';
@@ -761,7 +900,7 @@ function animate(){
             }
         }
 
-        if(currentMode==='flow'||currentMode==='flow2'||currentMode==='smear'){renderer.autoClearColor=false;fadeMat.color.setRGB(activeWorld.bg[0],activeWorld.bg[1],activeWorld.bg[2]);fadeMat.opacity=currentMode==='smear'?0.12:0.1;renderer.render(fadeScene,orthoCamera);renderer.render(scene,camera)}
+        if(currentMode==='flow'||currentMode==='flow2'||currentMode==='smear'||currentMode==='vortex'){renderer.autoClearColor=false;fadeMat.color.setRGB(activeWorld.bg[0],activeWorld.bg[1],activeWorld.bg[2]);fadeMat.opacity=currentMode==='smear'?0.12:currentMode==='vortex'?0.06:0.1;renderer.render(fadeScene,orthoCamera);renderer.render(scene,camera)}
         else{renderer.autoClearColor=true;renderer.setClearAlpha(1);renderer.render(scene,camera)}
     }
     else if(currentCategory==='game'){
