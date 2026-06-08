@@ -150,10 +150,27 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 
 <!-- No connection overlay -->
 <div id="no-conn" class="show">
-  <div class="spinner"></div>
-  <h2>Waiting for Tracker</h2>
-  <p>Open the tracker in another tab on the same device or browser.<br>
-     <a href="https://maciek11123.github.io/Tracker/" target="_blank">maciek11123.github.io/Tracker</a></p>
+  <div class="spinner" id="conn-spinner"></div>
+  <h2>Iron Hand Remote</h2>
+  <p>Enter your relay server IP to connect from phone to PC.<br>
+     Or open tracker in another tab on same browser.</p>
+  <div style="display:flex;gap:8px;width:min(300px,88vw)">
+    <input id="ws-input" type="text" placeholder="192.168.x.x"
+      style="flex:1;background:rgba(0,229,255,0.06);border:1px solid rgba(0,229,255,0.3);
+             border-radius:8px;padding:10px 13px;color:#fff;font-family:JetBrains Mono,monospace;
+             font-size:13px;outline:none;letter-spacing:.5px">
+    <button id="ws-connect-btn"
+      style="padding:10px 16px;background:rgba(0,229,255,0.12);border:1px solid rgba(0,229,255,0.4);
+             border-radius:8px;color:#00e5ff;font-family:Orbitron,sans-serif;font-size:9px;
+             letter-spacing:1.5px;cursor:pointer;white-space:nowrap">
+      CONNECT
+    </button>
+  </div>
+  <div id="ws-conn-status" style="font-size:9px;color:rgba(255,255,255,0.35);letter-spacing:1.5px;min-height:16px"></div>
+  <div style="font-size:9px;color:rgba(255,255,255,0.25);letter-spacing:1px;text-align:center;line-height:2">
+    Run <code style="color:#00e5ff">node server.js</code> on PC first<br>
+    <a href="https://maciek11123.github.io/Tracker/" target="_blank" style="color:rgba(0,229,255,0.5)">Open Tracker on same browser tab →</a>
+  </div>
 </div>
 
 <div id="scroll">
@@ -253,75 +270,152 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 </div><!-- /scroll -->
 
 <script>
-const ch = new BroadcastChannel('ironhand-remote');
-let connected = false;
-let liveState = {};
-let camRotDeg = 0;
+// ═══════════════════════════════════════════════════
+//  TRANSPORT — WebSocket (cross-device) + BroadcastChannel (same-browser)
+// ═══════════════════════════════════════════════════
+const bc  = new BroadcastChannel('ironhand-remote');
+let ws    = null;
+let wsUrl = null;
+let reconnTimer = null;
+let lostTimer   = null;
+let connected   = false;
+let camRotDeg   = 0;
 
-// ── Send helpers ──────────────────────────────────────────
-function send(obj){ ch.postMessage(obj); }
+// ── Ripple effect ─────────────────────────────────
 function ripple(btn){
-  const r=document.createElement('span');r.className='ripple';
+  const r=document.createElement('span'); r.className='ripple';
   const rect=btn.getBoundingClientRect();
   const size=Math.max(rect.width,rect.height);
   r.style.cssText=`width:${size}px;height:${size}px;left:${rect.width/2-size/2}px;top:${rect.height/2-size/2}px`;
-  btn.appendChild(r);setTimeout(()=>r.remove(),400);
+  btn.appendChild(r); setTimeout(()=>r.remove(),400);
 }
 
-// ── Connection status ─────────────────────────────────────
-function setConnected(val){
-  connected=val;
-  document.getElementById('conn-dot').classList.toggle('live',val);
-  document.getElementById('status-text').textContent=val?'Connected':'Searching…';
-  document.getElementById('no-conn').classList.toggle('show',!val);
+// ── Send to tracker (WS preferred, BC fallback) ───
+function send(obj){
+  if(ws && ws.readyState===WebSocket.OPEN){
+    ws.send(JSON.stringify(obj));
+  } else {
+    bc.postMessage(obj);
+  }
 }
 
-// Ping tracker every 2s, expect status back
-let pingTimer=setInterval(()=>{ send({cmd:'getState'}); },2000);
-let lostTimer=null;
+// ── Connection state ──────────────────────────────
+function setConnected(val, label){
+  connected = val;
+  document.getElementById('conn-dot').classList.toggle('live', val);
+  document.getElementById('status-text').textContent = label || (val ? 'Connected' : 'Disconnected');
+  document.getElementById('no-conn').classList.toggle('show', !val);
+}
 
 function resetLostTimer(){
   clearTimeout(lostTimer);
-  lostTimer=setTimeout(()=>setConnected(false),4000);
-  setConnected(true);
+  lostTimer = setTimeout(()=> setConnected(false,'No signal — retrying…'), 5000);
 }
 
-// ── Receive from tracker ──────────────────────────────────
-ch.onmessage=function(e){
-  const d=e.data;
-  if(!d)return;
-  if(d.type==='status'||d.type==='state'){
+function setWsStatus(msg){ document.getElementById('ws-conn-status').textContent = msg; }
+
+// ── WebSocket connect ─────────────────────────────
+function connectWS(ip){
+  // Accept bare IP, IP:port, or full ws:// URL
+  let url = ip.trim();
+  if(!url) return;
+  if(!url.startsWith('ws://') && !url.startsWith('wss://')) url = 'ws://' + url;
+  if(!/:\d+/.test(url.replace('ws://','').replace('wss://',''))) url += ':8765';
+
+  wsUrl = url;
+  localStorage.setItem('ironhand-relay-url', url);
+
+  if(ws){ ws.onclose=null; ws.onerror=null; ws.close(); ws=null; }
+  clearTimeout(reconnTimer);
+
+  setWsStatus('Connecting to ' + url + '…');
+  document.getElementById('conn-dot').style.background = '#fbbf24';
+
+  try { ws = new WebSocket(url); }
+  catch(e){ setWsStatus('Bad URL: ' + e.message); scheduleReconn(); return; }
+
+  ws.onopen = ()=>{
+    setWsStatus('');
+    ws.send(JSON.stringify({type:'hello', role:'remote'}));
+    // Ask tracker for full state immediately
+    ws.send(JSON.stringify({cmd:'getState'}));
+    setConnected(true, 'WebSocket ✓ ' + url);
     resetLostTimer();
-    liveState=d;
-    document.getElementById('hud-fps').textContent=d.fps||'';
-    document.getElementById('hud-hands').textContent=d.hands||'';
-    document.getElementById('hud-gesture').textContent=d.gesture||'—';
-    syncButtonsFromState(d);
+  };
+
+  ws.onmessage = (e)=>{
+    let d; try{ d=JSON.parse(e.data); }catch{ return; }
+    handleIncoming(d);
+  };
+
+  ws.onclose = ()=>{
+    if(connected) setConnected(false, 'Lost connection — retrying…');
+    setWsStatus('Disconnected. Retrying in 3s…');
+    scheduleReconn();
+  };
+
+  ws.onerror = ()=>{
+    setWsStatus('Cannot reach ' + url + '. Check server is running & same WiFi.');
+    document.getElementById('conn-dot').style.background = '#ff4444';
+  };
+}
+
+function scheduleReconn(){
+  clearTimeout(reconnTimer);
+  if(wsUrl) reconnTimer = setTimeout(()=> connectWS(wsUrl), 3000);
+}
+
+function disconnectWS(){
+  wsUrl = null;
+  localStorage.removeItem('ironhand-relay-url');
+  clearTimeout(reconnTimer);
+  clearTimeout(lostTimer);
+  if(ws){ ws.onclose=null; ws.onerror=null; ws.close(); ws=null; }
+  setConnected(false, 'Disconnected');
+  setWsStatus('');
+}
+
+// ── BroadcastChannel (same-browser fallback) ──────
+bc.onmessage = (e)=>{ if(e.data) handleIncoming(e.data); };
+
+// Ping via BC every 2s when not on WS
+setInterval(()=>{
+  if(!ws || ws.readyState!==WebSocket.OPEN) bc.postMessage({cmd:'getState'});
+}, 2000);
+
+// ── Handle incoming state/status from tracker ─────
+function handleIncoming(d){
+  if(d.type==='status' || d.type==='state' || d.type==='welcome'){
+    if(d.type !== 'welcome'){
+      resetLostTimer();
+      if(!connected) setConnected(true, ws ? 'WebSocket ✓' : 'BroadcastChannel ✓');
+      updateHUD(d);
+      syncButtonsFromState(d);
+    }
   }
-};
+}
+
+function updateHUD(d){
+  document.getElementById('hud-fps').textContent     = d.fps    || '';
+  document.getElementById('hud-hands').textContent   = d.hands  || '';
+  document.getElementById('hud-gesture').textContent = d.gesture|| '—';
+}
 
 function syncButtonsFromState(s){
-  // Mode buttons
-  document.querySelectorAll('.rb[data-mode]').forEach(b=>{
-    b.classList.toggle('active', b.dataset.mode===s.mode);
-  });
-  // Res buttons
-  document.querySelectorAll('.rb[data-res]').forEach(b=>{
-    b.classList.toggle('active', b.dataset.res===s.res);
-  });
-  // Toggles
+  document.querySelectorAll('.rb[data-mode]').forEach(b=>
+    b.classList.toggle('active', b.dataset.mode===s.mode));
+  document.querySelectorAll('.rb[data-res]').forEach(b=>
+    b.classList.toggle('active', b.dataset.res===s.res));
   setToggle('r-holo',     s.holoEnabled!==false);
   setToggle('r-skeleton', s.skeletonEnabled!==false);
   setToggle('r-mirror',   s.mirrorX!==false);
   setToggle('r-camview',  !!s.camView);
   setToggle('r-ui',       s.uiVisible!==false);
-  // Flow opts visibility
-  const showFlow=s.mode==='flow'||s.mode==='flow2';
-  document.getElementById('flow-opts-remote').style.display=showFlow?'flex':'none';
-  document.getElementById('flow-opts-label').style.display=showFlow?'block':'none';
-  // Cam rotation
-  if(typeof s.camRotation==='number'){ camRotDeg=s.camRotation; }
-  document.getElementById('cam-deg-label').textContent=camRotDeg+'°';
+  const showFlow = s.mode==='flow'||s.mode==='flow2';
+  document.getElementById('flow-opts-remote').style.display  = showFlow?'flex':'none';
+  document.getElementById('flow-opts-label').style.display   = showFlow?'block':'none';
+  if(typeof s.camRotation==='number') camRotDeg = s.camRotation;
+  document.getElementById('cam-deg-label').textContent = camRotDeg+'°';
 }
 
 function setToggle(id,val){
@@ -329,21 +423,44 @@ function setToggle(id,val){
   if(el) el.classList.toggle('active',val);
 }
 
-// ── Mode buttons ──────────────────────────────────────────
+// ═══════════════════════════════════════════════════
+//  IP INPUT WIRING
+// ═══════════════════════════════════════════════════
+const wsInput = document.getElementById('ws-input');
+const wsBtn   = document.getElementById('ws-connect-btn');
+
+// Restore saved IP
+const savedUrl = localStorage.getItem('ironhand-relay-url');
+if(savedUrl){
+  // Strip ws:// and port for display
+  wsInput.value = savedUrl.replace('ws://','').replace(':8765','');
+  connectWS(savedUrl);
+}
+
+wsBtn.addEventListener('click',()=>{
+  const val = wsInput.value.trim();
+  if(val) connectWS(val);
+});
+wsInput.addEventListener('keydown', e=>{ if(e.key==='Enter') wsBtn.click(); });
+
+// ═══════════════════════════════════════════════════
+//  BUTTON WIRING
+// ═══════════════════════════════════════════════════
+
+// Mode buttons
 document.querySelectorAll('.rb[data-mode]').forEach(btn=>{
   btn.addEventListener('click',()=>{
     ripple(btn);
     send({cmd:'setMode', mode:btn.dataset.mode, cat:btn.dataset.cat});
-    // Optimistic update
     document.querySelectorAll('.rb[data-mode]').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
-    const showFlow=btn.dataset.mode==='flow'||btn.dataset.mode==='flow2';
-    document.getElementById('flow-opts-remote').style.display=showFlow?'flex':'none';
-    document.getElementById('flow-opts-label').style.display=showFlow?'block':'none';
+    const showFlow = btn.dataset.mode==='flow'||btn.dataset.mode==='flow2';
+    document.getElementById('flow-opts-remote').style.display = showFlow?'flex':'none';
+    document.getElementById('flow-opts-label').style.display  = showFlow?'block':'none';
   });
 });
 
-// ── Res buttons ───────────────────────────────────────────
+// Res buttons
 document.querySelectorAll('.rb[data-res]').forEach(btn=>{
   btn.addEventListener('click',()=>{
     ripple(btn);
@@ -353,39 +470,35 @@ document.querySelectorAll('.rb[data-res]').forEach(btn=>{
   });
 });
 
-// ── Toggle buttons ────────────────────────────────────────
+// Toggle + command buttons
 document.querySelectorAll('.rb[data-cmd]').forEach(btn=>{
   btn.addEventListener('click',()=>{
     ripple(btn);
-    const cmd=btn.dataset.cmd;
+    const cmd = btn.dataset.cmd;
     send({cmd});
-    // Optimistic toggle for visual buttons
     if(cmd==='toggleCamRotation'){
       camRotDeg=(camRotDeg+90)%360;
-      document.getElementById('cam-deg-label').textContent=camRotDeg+'°';
+      document.getElementById('cam-deg-label').textContent = camRotDeg+'°';
     } else if(['toggleHolo','toggleSkeleton','toggleMirror','toggleCamView','toggleUI'].includes(cmd)){
       btn.classList.toggle('active');
     }
   });
 });
 
-// ── Sliders ───────────────────────────────────────────────
+// Sliders
 [['r-s-rot','s-rot'],['r-s-int','s-int'],['r-s-rad','s-rad'],['r-s-frc','s-frc']].forEach(([rid,sid])=>{
-  const el=document.getElementById(rid);
-  const val=document.getElementById('v-'+sid);
-  if(!el)return;
+  const el  = document.getElementById(rid);
+  const val = document.getElementById('v-'+sid);
+  if(!el) return;
   el.addEventListener('input',()=>{
-    val.textContent=parseFloat(el.value).toFixed(1);
+    val.textContent = parseFloat(el.value).toFixed(1);
     send({cmd:'setSlider', id:sid, value:el.value});
   });
 });
 
-// ── Prevent body scroll bounce on iOS ────────────────────
+// Prevent iOS bounce scroll
 document.getElementById('scroll').addEventListener('touchmove',e=>e.stopPropagation(),{passive:true});
 document.body.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
-
-// Initial state request
-send({cmd:'getState'});
 </script>
 </body>
 </html>

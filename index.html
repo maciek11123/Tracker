@@ -837,46 +837,171 @@ setMode('smear','world');
 animate();
 getCameras();
 
-// ── Remote control via BroadcastChannel ──────────────────
+// ── Remote control: WebSocket + BroadcastChannel fallback ─
 (function(){
-    const ch=new BroadcastChannel('ironhand-remote');
-    ch.onmessage=function(e){
-        const d=e.data;
+    // ── BroadcastChannel (same-browser fallback) ────────────
+    const bc=new BroadcastChannel('ironhand-remote');
+
+    function getState(){
+        return {type:'state',
+            mode:currentMode,cat:currentCategory,res:currentRes,
+            mirrorX,holoEnabled,skeletonEnabled,camView,
+            camRotation,uiVisible,
+            fps:fpsEl.textContent,hands:handStatusEl.textContent,
+            status:statusEl.textContent,gesture:gestureHudEl.textContent};
+    }
+
+    function handleCmd(d){
         if(!d||!d.cmd)return;
         switch(d.cmd){
-            case'setMode':   setMode(d.mode,d.cat);break;
-            case'setRes':    setRes(d.res);break;
-            case'toggleUI':  toggleUI();break;
-            case'toggleFS':  toggleFS();break;
-            case'toggleMirror': toggleMirror();break;
-            case'toggleHolo':   toggleHolo();break;
-            case'toggleSkeleton': toggleSkeleton();break;
-            case'toggleCamView':  toggleCamView();break;
-            case'toggleCamRotation': toggleCamRotation();break;
+            case'setMode':            setMode(d.mode,d.cat);break;
+            case'setRes':             setRes(d.res);break;
+            case'toggleUI':           toggleUI();break;
+            case'toggleFS':           toggleFS();break;
+            case'toggleMirror':       toggleMirror();break;
+            case'toggleHolo':         toggleHolo();break;
+            case'toggleSkeleton':     toggleSkeleton();break;
+            case'toggleCamView':      toggleCamView();break;
+            case'toggleCamRotation':  toggleCamRotation();break;
             case'setSlider':
                 var el=document.getElementById(d.id);
                 if(el){el.value=d.value;el.dispatchEvent(new Event('input'));}
                 break;
             case'getState':
-                ch.postMessage({type:'state',
-                    mode:currentMode,cat:currentCategory,res:currentRes,
-                    mirrorX,holoEnabled,skeletonEnabled,camView,
-                    camRotation,uiVisible,
-                    fps:fpsEl.textContent,hands:handStatusEl.textContent,
-                    status:statusEl.textContent,gesture:gestureHudEl.textContent
-                });
+                bc.postMessage(getState());
+                if(ws&&ws.readyState===1)ws.send(JSON.stringify(getState()));
                 break;
         }
-    };
-    // Broadcast live status every second
+    }
+
+    bc.onmessage=function(e){handleCmd(e.data);};
+
+    // Status broadcast every second (BC + WS)
     setInterval(()=>{
-        ch.postMessage({type:'status',
+        const s={type:'status',
             mode:currentMode,cat:currentCategory,res:currentRes,
             mirrorX,holoEnabled,skeletonEnabled,camView,camRotation,
             fps:fpsEl.textContent,hands:handStatusEl.textContent,
-            status:statusEl.textContent,gesture:gestureHudEl.textContent
-        });
+            status:statusEl.textContent,gesture:gestureHudEl.textContent};
+        bc.postMessage(s);
+        if(ws&&ws.readyState===1)ws.send(JSON.stringify(s));
     },1000);
+
+    // ── WebSocket ───────────────────────────────────────────
+    var ws=null, wsUrl=null, wsReconnTimer=null;
+
+    // Read saved relay URL from localStorage
+    var savedUrl=localStorage.getItem('ironhand-relay');
+    if(savedUrl)connectWS(savedUrl);
+
+    // Floating relay config button (bottom-right)
+    var relayBtn=document.createElement('button');
+    relayBtn.id='relay-btn';
+    relayBtn.title='WebSocket Relay';
+    relayBtn.innerHTML='<span id="relay-dot">⬤</span> WS';
+    relayBtn.style.cssText='position:fixed;bottom:14px;right:14px;z-index:9999;'+
+        'background:rgba(10,10,20,0.9);border:1px solid rgba(0,229,255,0.25);'+
+        'color:rgba(0,229,255,0.5);font-family:Orbitron,sans-serif;font-size:9px;'+
+        'letter-spacing:1.5px;padding:6px 10px;border-radius:20px;cursor:pointer;'+
+        'backdrop-filter:blur(8px);transition:all .2s';
+    document.body.appendChild(relayBtn);
+
+    // Modal for entering relay IP
+    var modal=document.createElement('div');
+    modal.style.cssText='display:none;position:fixed;inset:0;z-index:10000;'+
+        'background:rgba(0,0,0,0.85);backdrop-filter:blur(6px);'+
+        'align-items:center;justify-content:center;flex-direction:column;gap:12px;';
+    modal.innerHTML=`
+      <div style="background:#0a0a14;border:1px solid rgba(0,229,255,0.3);border-radius:12px;padding:22px 20px;width:min(320px,90vw);display:flex;flex-direction:column;gap:12px">
+        <div style="font-family:Orbitron;font-size:11px;letter-spacing:3px;color:#00e5ff;text-transform:uppercase">WebSocket Relay</div>
+        <div style="font-size:10px;color:rgba(255,255,255,0.45);line-height:1.7">Run <code style="color:#00e5ff;background:rgba(0,229,255,0.1);padding:1px 5px;border-radius:3px">node server.js</code> on your PC, then enter the IP shown in the terminal.</div>
+        <input id="relay-input" type="text" placeholder="ws://192.168.x.x:8765"
+          style="background:#050508;border:1px solid rgba(0,229,255,0.25);border-radius:7px;padding:9px 12px;color:#fff;font-family:JetBrains Mono,monospace;font-size:12px;outline:none;letter-spacing:.5px;width:100%">
+        <div style="display:flex;gap:8px">
+          <button id="relay-connect" style="flex:1;padding:9px;background:rgba(0,229,255,0.12);border:1px solid rgba(0,229,255,0.3);border-radius:7px;color:#00e5ff;font-family:Orbitron;font-size:9px;letter-spacing:1.5px;cursor:pointer">CONNECT</button>
+          <button id="relay-disconnect" style="padding:9px 14px;background:rgba(255,68,68,0.1);border:1px solid rgba(255,68,68,0.3);border-radius:7px;color:#ff4444;font-family:Orbitron;font-size:9px;letter-spacing:1.5px;cursor:pointer">CLEAR</button>
+          <button id="relay-cancel" style="padding:9px 14px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:7px;color:rgba(255,255,255,0.4);font-family:Orbitron;font-size:9px;cursor:pointer">✕</button>
+        </div>
+        <div id="relay-status" style="font-size:9px;color:rgba(255,255,255,0.3);letter-spacing:1px;min-height:14px"></div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    relayBtn.onclick=function(){
+        modal.style.display='flex';
+        if(wsUrl)document.getElementById('relay-input').value=wsUrl;
+    };
+    document.getElementById('relay-cancel').onclick=function(){modal.style.display='none';};
+    document.getElementById('relay-connect').onclick=function(){
+        var url=document.getElementById('relay-input').value.trim();
+        if(!url)return;
+        if(!url.startsWith('ws'))url='ws://'+url;
+        if(!url.includes(':'))url+=':8765';
+        localStorage.setItem('ironhand-relay',url);
+        connectWS(url);
+        modal.style.display='none';
+    };
+    document.getElementById('relay-disconnect').onclick=function(){
+        localStorage.removeItem('ironhand-relay');
+        if(ws){ws.onclose=null;ws.close();ws=null;}
+        wsUrl=null;clearTimeout(wsReconnTimer);
+        setRelayDot('off');
+        document.getElementById('relay-input').value='';
+        modal.style.display='none';
+    };
+
+    function setRelayDot(state){
+        var dot=document.getElementById('relay-dot');
+        if(!dot)return;
+        var colors={off:'rgba(255,255,255,0.2)',connecting:'#fbbf24',on:'#50fa7b',error:'#ff4444'};
+        dot.style.color=colors[state]||colors.off;
+        relayBtn.style.borderColor=state==='on'?'rgba(80,250,123,0.4)':'rgba(0,229,255,0.25)';
+        relayBtn.style.color=state==='on'?'#50fa7b':'rgba(0,229,255,0.5)';
+    }
+
+    function setRelayStatus(msg){
+        var el=document.getElementById('relay-status');
+        if(el)el.textContent=msg;
+    }
+
+    function connectWS(url){
+        wsUrl=url;
+        if(ws){ws.onclose=null;ws.close();}
+        clearTimeout(wsReconnTimer);
+        setRelayDot('connecting');
+        try{
+            ws=new WebSocket(url);
+        }catch(e){setRelayDot('error');scheduleReconn();return;}
+
+        ws.onopen=function(){
+            setRelayDot('on');
+            setRelayStatus('Connected to '+url);
+            ws.send(JSON.stringify({type:'hello',role:'tracker'}));
+            // Send state immediately so remotes get it on connect
+            ws.send(JSON.stringify(getState()));
+        };
+        ws.onmessage=function(e){
+            var d; try{d=JSON.parse(e.data);}catch{return;}
+            // remote_connected: send full state immediately
+            if(d.type==='remote_connected'){
+                ws.send(JSON.stringify(getState()));
+                return;
+            }
+            handleCmd(d);
+        };
+        ws.onclose=function(){
+            setRelayDot('off');
+            setRelayStatus('Disconnected — retrying…');
+            scheduleReconn();
+        };
+        ws.onerror=function(){
+            setRelayDot('error');
+        };
+    }
+
+    function scheduleReconn(){
+        if(!wsUrl)return;
+        wsReconnTimer=setTimeout(()=>connectWS(wsUrl),3000);
+    }
 })();
 </script>
 </body>
