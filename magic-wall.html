@@ -746,6 +746,7 @@ function spawnCharacter(person,now){
   y=Math.max(0,Math.min(y,H-charH));
   charEl.style.left=x+'px';charEl.style.top=y+'px';
   charEl.style.height=charH+'px';charEl.style.width='auto';
+  charEl.style.display='';
   charEl.className='entering';
   setTimeout(()=>{
     if(!charActive)return;
@@ -753,7 +754,7 @@ function spawnCharacter(person,now){
     setTimeout(()=>{
       if(!charActive)return;
       charEl.className='exiting';
-      setTimeout(()=>{charEl.className='';charEl.style.display='none';charActive=false},450);
+      setTimeout(()=>{charEl.className='';charActive=false},450);
     },BCFG.charVisibleMs);
   },500);
 }
