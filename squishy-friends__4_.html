@@ -1,0 +1,1955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Squishy Friends</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { 
+  width: 100%; height: 100%; overflow: hidden; 
+  background: #000;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+canvas { display: block; width: 100%; height: 100%; }
+#videoContainer {
+  position: fixed; bottom: 12px; right: 12px;
+  width: 120px; height: 90px; border-radius: 10px;
+  overflow: hidden; z-index: 10; opacity: 0;
+  transition: opacity 0.4s;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+}
+#videoContainer.active { opacity: 1; }
+#webcamVideo { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+#toggleCam {
+  position: fixed; bottom: 12px; left: 12px;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: rgba(0,0,0,0.5); border: none; color: #fff;
+  font-size: 20px; z-index: 10; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(6px);
+}
+#toggleCam:active { background: rgba(0,0,0,0.7); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="toggleCam" aria-label="Toggle camera">🖐️</button>
+<div id="videoContainer">
+  <video id="webcamVideo" playsinline autoplay muted></video>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js"></script>
+
+<script>
+// ─── Canvas Setup ───
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ─── Utility ───
+function lerp(a, b, t) { return a + (b - a) * t; }
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function clamp(v, mn, mx) { return Math.max(mn, Math.min(mx, v)); }
+
+// ─── Sound Engine — Distinct Character Personalities ───
+let audioCtx = null;
+let soundUnlocked = false;
+let masterGainNode = null;
+
+function getAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGainNode = audioCtx.createGain();
+    masterGainNode.gain.value = 0.32;
+    masterGainNode.connect(audioCtx.destination);
+  }
+  return audioCtx;
+}
+
+function unlockAudio() {
+  if (soundUnlocked) return;
+  soundUnlocked = true;
+  const ac = getAudioCtx();
+  if (ac.state === 'suspended') ac.resume();
+}
+
+// Core oscillator builder
+function osc(ac, type, freq, detuneVal = 0) {
+  const o = ac.createOscillator();
+  o.type = type;
+  o.frequency.value = freq;
+  o.detune.value = detuneVal;
+  return o;
+}
+
+// Core envelope builder
+function env(ac, gainVal, atk, dec, sus, rel, dest) {
+  const g = ac.createGain();
+  const t = ac.currentTime;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(gainVal, t + atk);
+  g.gain.exponentialRampToValueAtTime(gainVal * sus + 0.0001, t + atk + dec);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + atk + dec + rel);
+  g.connect(dest);
+  return { g, dur: atk + dec + rel };
+}
+
+const soundThrottle = new Map();
+function soundThrottled(key, fn, ms = 200) {
+  const now = performance.now();
+  if (!soundThrottle.has(key) || now - soundThrottle.get(key) > ms) {
+    soundThrottle.set(key, now);
+    fn();
+  }
+}
+
+// ─ 14 completely distinct sound personalities ─
+const CHAR_SOUNDS = [
+
+  // 0. Teal semicircle — deep resonant bowl, like a singing bowl
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 130); const { g, dur } = env(ac, 0.22, 0.04, 0.1, 0.6, 1.8, masterGainNode);
+      const o2 = osc(ac, 'sine', 260); const g2 = ac.createGain(); g2.gain.value = 0.07; g2.connect(masterGainNode);
+      o.connect(g); o.start(t); o.stop(t + dur + 0.1);
+      o2.connect(g2); o2.start(t); o2.stop(t + 1.2);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 196); const { g, dur } = env(ac, 0.18, 0.02, 0.05, 0.5, 2.2, masterGainNode);
+      o.connect(g); o.start(t); o.stop(t + dur + 0.1);
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [130, 196, 260].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.12); g.gain.linearRampToValueAtTime(0.12, t + i * 0.12 + 0.04);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.12 + 1.0);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.12); o.stop(t + i * 0.12 + 1.1);
+      });
+    }
+  },
+
+  // 1. Blue rectangle — warm wooden marimba
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'triangle', 523); const { g, dur } = env(ac, 0.2, 0.005, 0.08, 0.1, 0.4, masterGainNode);
+      const o2 = osc(ac, 'sine', 523 * 2.76); const g2 = ac.createGain(); g2.gain.value = 0.05; g2.connect(masterGainNode);
+      o.connect(g); o.start(t); o.stop(t + dur + 0.05);
+      o2.connect(g2); o2.start(t); o2.stop(t + 0.3);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [523, 659, 784].forEach((f, i) => {
+        const o = osc(ac, 'triangle', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.06); g.gain.linearRampToValueAtTime(0.12, t + i * 0.06 + 0.006);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.06 + 0.5);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.06); o.stop(t + i * 0.06 + 0.55);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [659, 784, 1047].forEach((f, i) => {
+        const o = osc(ac, 'triangle', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.09); g.gain.linearRampToValueAtTime(0.11, t + i * 0.09 + 0.006);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.09 + 0.55);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.09); o.stop(t + i * 0.09 + 0.6);
+      });
+    }
+  },
+
+  // 2. Yellow circle — bubbly xylophone pop
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 880); const { g, dur } = env(ac, 0.18, 0.004, 0.04, 0.05, 0.25, masterGainNode);
+      o.frequency.setValueAtTime(1100, t); o.frequency.exponentialRampToValueAtTime(880, t + 0.08);
+      o.connect(g); o.start(t); o.stop(t + 0.4);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [1047, 1319, 1568].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.055); g.gain.linearRampToValueAtTime(0.13, t + i * 0.055 + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.055 + 0.38);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.055); o.stop(t + i * 0.055 + 0.42);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      for (let i = 0; i < 4; i++) {
+        const f = 880 * Math.pow(1.25, i); const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.07); g.gain.linearRampToValueAtTime(0.12, t + i * 0.07 + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.07 + 0.3);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.07); o.stop(t + i * 0.07 + 0.35);
+      }
+    }
+  },
+
+  // 3. Purple rectangle — deep plucked bass
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sawtooth', 98); const g = ac.createGain();
+      const filt = ac.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 400;
+      g.gain.setValueAtTime(0.25, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+      o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t); o.stop(t + 0.75);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 196); const { g, dur } = env(ac, 0.2, 0.01, 0.1, 0.3, 0.6, masterGainNode);
+      o.connect(g); o.start(t); o.stop(t + dur + 0.05);
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [98, 147, 196].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.1); g.gain.linearRampToValueAtTime(0.15, t + i * 0.1 + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.1 + 0.5);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.1); o.stop(t + i * 0.1 + 0.55);
+      });
+    }
+  },
+
+  // 4. Blue triangle — sparkly wind chime high bell
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [2093, 2637, 3136].forEach((f, i) => {
+        const o = osc(ac, 'sine', f, (Math.random() - 0.5) * 8); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.04); g.gain.linearRampToValueAtTime(0.1, t + i * 0.04 + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.04 + 0.9);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.04); o.stop(t + i * 0.04 + 1.0);
+      });
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [1568, 2093, 2637, 3136].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.05); g.gain.linearRampToValueAtTime(0.09, t + i * 0.05 + 0.004);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.05 + 1.1);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.05); o.stop(t + i * 0.05 + 1.2);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      for (let i = 0; i < 6; i++) {
+        const f = 1568 * (1 + Math.random() * 0.5); const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.06); g.gain.linearRampToValueAtTime(0.07, t + i * 0.06 + 0.004);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.06 + 0.6);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.06); o.stop(t + i * 0.06 + 0.65);
+      }
+    }
+  },
+
+  // 5. Orange striped ball — bouncy cartoon spring boing
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 440); const { g } = env(ac, 0.2, 0.005, 0.05, 0.1, 0.5, masterGainNode);
+      o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(800, t + 0.15);
+      o.frequency.exponentialRampToValueAtTime(350, t + 0.35);
+      o.connect(g); o.start(t); o.stop(t + 0.7);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 440); const { g } = env(ac, 0.18, 0.005, 0.04, 0.08, 0.4, masterGainNode);
+      o.frequency.setValueAtTime(600, t); o.frequency.exponentialRampToValueAtTime(1200, t + 0.1);
+      o.frequency.exponentialRampToValueAtTime(440, t + 0.3);
+      o.connect(g); o.start(t); o.stop(t + 0.55);
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      for (let i = 0; i < 3; i++) {
+        const o = osc(ac, 'sine', 300 + i * 150); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.1); g.gain.linearRampToValueAtTime(0.14, t + i * 0.1 + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.1 + 0.4);
+        o.frequency.setValueAtTime(200 + i * 100, t + i * 0.1);
+        o.frequency.exponentialRampToValueAtTime(600 + i * 200, t + i * 0.1 + 0.15);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.1); o.stop(t + i * 0.1 + 0.45);
+      }
+    }
+  },
+
+  // 6. Yellow zigzag — quirky kazoo / buzzy toy
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sawtooth', 330); const { g } = env(ac, 0.14, 0.01, 0.05, 0.4, 0.3, masterGainNode);
+      const filt = ac.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 1200; filt.Q.value = 3;
+      o.connect(filt); filt.connect(g); o.start(t); o.stop(t + 0.6);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [330, 392, 494].forEach((f, i) => {
+        const o = osc(ac, 'square', f); const filt = ac.createBiquadFilter();
+        filt.type = 'bandpass'; filt.frequency.value = 900; filt.Q.value = 4;
+        const g = ac.createGain(); g.gain.setValueAtTime(0.08, t + i * 0.07); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.07 + 0.35);
+        o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t + i * 0.07); o.stop(t + i * 0.07 + 0.4);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sawtooth', 440); const filt = ac.createBiquadFilter();
+      filt.type = 'bandpass'; filt.frequency.value = 1400; filt.Q.value = 5;
+      const g = ac.createGain(); g.gain.setValueAtTime(0.1, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+      o.frequency.setValueAtTime(330, t); o.frequency.linearRampToValueAtTime(660, t + 0.3); o.frequency.linearRampToValueAtTime(330, t + 0.6);
+      o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t); o.stop(t + 0.65);
+    }
+  },
+
+  // 7. Pink heart — warm breathy flute / soft airy tone
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const noise = ac.createOscillator(); noise.type = 'sine'; noise.frequency.value = 698;
+      const g = ac.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.16, t + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.08, t + 0.3); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.0);
+      noise.connect(g); g.connect(masterGainNode); noise.start(t); noise.stop(t + 1.05);
+      // breathy overtone
+      const o2 = osc(ac, 'sine', 698 * 1.5); const g2 = ac.createGain();
+      g2.gain.setValueAtTime(0, t + 0.05); g2.gain.linearRampToValueAtTime(0.05, t + 0.15); g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+      o2.connect(g2); g2.connect(masterGainNode); o2.start(t + 0.05); o2.stop(t + 1.0);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [698, 880, 1047].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.08); g.gain.linearRampToValueAtTime(0.1, t + i * 0.08 + 0.06);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.08 + 0.8);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.08); o.stop(t + i * 0.08 + 0.9);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      for (let i = 0; i < 4; i++) {
+        const o = osc(ac, 'sine', 698 * (1 + i * 0.15)); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.09); g.gain.linearRampToValueAtTime(0.1, t + i * 0.09 + 0.04);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.09 + 0.55);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.09); o.stop(t + i * 0.09 + 0.6);
+      }
+    }
+  },
+
+  // 8. Green star — electric strum / bright pluck
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [329, 415, 494, 659].forEach((f, i) => {
+        const o = osc(ac, 'sawtooth', f); const filt = ac.createBiquadFilter();
+        filt.type = 'lowpass'; filt.frequency.value = 2000; filt.frequency.exponentialRampToValueAtTime(400, t + 0.3);
+        const g = ac.createGain(); g.gain.setValueAtTime(0.1, t + i * 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.015 + 0.45);
+        o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t + i * 0.015); o.stop(t + i * 0.015 + 0.5);
+      });
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [494, 659, 831, 988].forEach((f, i) => {
+        const o = osc(ac, 'sawtooth', f); const filt = ac.createBiquadFilter();
+        filt.type = 'lowpass'; filt.frequency.value = 1800;
+        const g = ac.createGain(); g.gain.setValueAtTime(0.09, t + i * 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.02 + 0.55);
+        o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t + i * 0.02); o.stop(t + i * 0.02 + 0.6);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      for (let i = 0; i < 5; i++) {
+        const f = [329, 415, 494, 587, 659][i]; const o = osc(ac, 'sawtooth', f);
+        const filt = ac.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 1500;
+        const g = ac.createGain(); g.gain.setValueAtTime(0.09, t + i * 0.045); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.045 + 0.4);
+        o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t + i * 0.045); o.stop(t + i * 0.045 + 0.45);
+      }
+    }
+  },
+
+  // 9. Cloud — gentle whoosh + airy hum
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const buf = ac.createBuffer(1, ac.sampleRate * 0.6, ac.sampleRate);
+      const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      const src = ac.createBufferSource(); src.buffer = buf;
+      const filt = ac.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 600; filt.Q.value = 0.5;
+      const g = ac.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.15, t + 0.15);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+      src.connect(filt); filt.connect(g); g.connect(masterGainNode); src.start(t); src.stop(t + 0.65);
+      const o = osc(ac, 'sine', 220); const g2 = ac.createGain();
+      g2.gain.setValueAtTime(0, t + 0.1); g2.gain.linearRampToValueAtTime(0.08, t + 0.3); g2.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+      o.connect(g2); g2.connect(masterGainNode); o.start(t + 0.1); o.stop(t + 1.25);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const buf = ac.createBuffer(1, ac.sampleRate * 0.8, ac.sampleRate);
+      const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      const src = ac.createBufferSource(); src.buffer = buf;
+      const filt = ac.createBiquadFilter(); filt.type = 'highpass'; filt.frequency.value = 1200;
+      const g = ac.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.1, t + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+      src.connect(filt); filt.connect(g); g.connect(masterGainNode); src.start(t); src.stop(t + 0.85);
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [220, 277, 330, 370].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.1); g.gain.linearRampToValueAtTime(0.1, t + i * 0.1 + 0.06);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.1 + 0.7);
+        o.detune.value = (Math.random() - 0.5) * 10;
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.1); o.stop(t + i * 0.1 + 0.75);
+      });
+    }
+  },
+
+  // 10. Diamond — sharp glass clink / crystal ping
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [1760, 2217, 2794].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0.12, t + i * 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.01 + 0.7);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.01); o.stop(t + i * 0.01 + 0.75);
+      });
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [2093, 2637, 3322, 4186].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0.1, t + i * 0.025); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.025 + 0.8);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.025); o.stop(t + i * 0.025 + 0.85);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      for (let i = 0; i < 5; i++) {
+        const f = 1760 + i * 350; const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0.09, t + i * 0.055); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.055 + 0.5);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.055); o.stop(t + i * 0.055 + 0.55);
+      }
+    }
+  },
+
+  // 11. Pentagon — soft steelpan / oceanic tone
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 392); const { g } = env(ac, 0.19, 0.007, 0.06, 0.3, 0.9, masterGainNode);
+      const o2 = osc(ac, 'sine', 392 * 1.87); const g2 = ac.createGain(); g2.gain.value = 0.06; g2.connect(masterGainNode);
+      const o3 = osc(ac, 'sine', 392 * 3.04); const g3 = ac.createGain(); g3.gain.value = 0.03; g3.connect(masterGainNode);
+      o.connect(g); o2.connect(g2); o3.connect(g3);
+      [o,o2,o3].forEach(x => { x.start(t); x.stop(t + 1.5); });
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [392, 494, 587, 698].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const { g } = env(ac, 0.1, 0.006, 0.05, 0.25, 0.8, masterGainNode);
+        o.connect(g); o.start(t + i * 0.07); o.stop(t + i * 0.07 + 1.1);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [392, 440, 494, 523, 587].forEach((f, i) => {
+        const o = osc(ac, 'sine', f); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.08); g.gain.linearRampToValueAtTime(0.12, t + i * 0.08 + 0.006);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.08 + 0.6);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.08); o.stop(t + i * 0.08 + 0.65);
+      });
+    }
+  },
+
+  // 12. Pill — mellow synth pad chord
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [174, 220, 261].forEach((f, i) => {
+        const o = osc(ac, 'sine', f, (Math.random()-0.5)*8); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.1, t + 0.25);
+        g.gain.linearRampToValueAtTime(0.06, t + 0.8); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+        o.connect(g); g.connect(masterGainNode); o.start(t); o.stop(t + 1.65);
+      });
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [220, 277, 330, 392].forEach((f, i) => {
+        const o = osc(ac, 'sine', f, (Math.random()-0.5)*6); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.06); g.gain.linearRampToValueAtTime(0.09, t + i * 0.06 + 0.2);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.06 + 1.4);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.06); o.stop(t + i * 0.06 + 1.5);
+      });
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      [174, 220, 261, 330].forEach((f, i) => {
+        const o = osc(ac, 'sine', f, (Math.random()-0.5)*10); const g = ac.createGain();
+        g.gain.setValueAtTime(0, t + i * 0.11); g.gain.linearRampToValueAtTime(0.1, t + i * 0.11 + 0.18);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.11 + 1.0);
+        o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.11); o.stop(t + i * 0.11 + 1.05);
+      });
+    }
+  },
+
+  // 13. Orange blob — wobbly theremin / alien wobble
+  {
+    grab: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 330); const { g } = env(ac, 0.18, 0.05, 0.08, 0.5, 0.6, masterGainNode);
+      o.frequency.setValueAtTime(260, t); o.frequency.linearRampToValueAtTime(520, t + 0.25);
+      o.frequency.linearRampToValueAtTime(340, t + 0.5); o.frequency.linearRampToValueAtTime(440, t + 0.8);
+      const lfo = osc(ac, 'sine', 5.5); const lfoG = ac.createGain(); lfoG.gain.value = 18;
+      lfo.connect(lfoG); lfoG.connect(o.detune);
+      o.connect(g); lfo.start(t); lfo.stop(t + 1.0); o.start(t); o.stop(t + 1.0);
+    },
+    release: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 440); const { g } = env(ac, 0.16, 0.03, 0.07, 0.4, 0.7, masterGainNode);
+      o.frequency.setValueAtTime(300, t); o.frequency.exponentialRampToValueAtTime(700, t + 0.3);
+      o.frequency.exponentialRampToValueAtTime(440, t + 0.7);
+      const lfo = osc(ac, 'sine', 7); const lfoG = ac.createGain(); lfoG.gain.value = 22;
+      lfo.connect(lfoG); lfoG.connect(o.detune);
+      o.connect(g); lfo.start(t); lfo.stop(t + 1.0); o.start(t); o.stop(t + 1.0);
+    },
+    giggle: () => {
+      const ac = getAudioCtx(); const t = ac.currentTime;
+      const o = osc(ac, 'sine', 440); const { g } = env(ac, 0.15, 0.02, 0.05, 0.6, 0.5, masterGainNode);
+      o.frequency.setValueAtTime(220, t); o.frequency.linearRampToValueAtTime(880, t + 0.4);
+      o.frequency.linearRampToValueAtTime(330, t + 0.7); o.frequency.linearRampToValueAtTime(660, t + 1.0);
+      const lfo = osc(ac, 'sine', 9); const lfoG = ac.createGain(); lfoG.gain.value = 30;
+      lfo.connect(lfoG); lfoG.connect(o.detune);
+      o.connect(g); lfo.start(t); lfo.stop(t + 1.1); o.start(t); o.stop(t + 1.1);
+    }
+  },
+];
+
+function soundForChar(char, type) {
+  if (!soundUnlocked) return;
+  const idx = characters.indexOf(char);
+  const sounds = CHAR_SOUNDS[Math.max(0, Math.min(idx, CHAR_SOUNDS.length - 1))];
+  if (!sounds) return;
+  const fn = sounds[type === 'collide' ? 'grab' : type];
+  if (fn) fn();
+}
+
+// ─── Character Definitions ───
+const SHAPES = {
+  circle: 'circle',
+  rect: 'rect',
+  triangle: 'triangle',
+  semicircle: 'semicircle',
+  egg: 'egg',
+  star: 'star',
+  pentagon: 'pentagon',
+  heart: 'heart',
+  cloud: 'cloud',
+  diamond: 'diamond',
+  pill: 'pill',
+  blob: 'blob'
+};
+
+class Character {
+  constructor(cfg) {
+    this.shape = cfg.shape;
+    this.baseColor = cfg.color;
+    this.size = cfg.size;
+    this.x = cfg.x; this.y = cfg.y;
+    this.vx = 0; this.vy = 0;
+    this.rotation = cfg.rotation || 0;
+    this.targetRotation = this.rotation;
+    this.eyes = cfg.eyes || {};
+    this.accessories = cfg.accessories || {};
+    this.decorations = cfg.decorations || [];
+    
+    // Squish physics
+    this.scaleX = 1; this.scaleY = 1;
+    this.targetScaleX = 1; this.targetScaleY = 1;
+    this.squishVx = 0; this.squishVy = 0;
+    
+    // Emotion state
+    this.emotion = 'idle'; // idle, happy, giggle, surprised, laughing
+    this.emotionTimer = 0;
+    this.emotionIntensity = 0;
+    this.blinkTimer = Math.random() * 200;
+    this.isBlinking = false;
+    this.blinkDuration = 0;
+    
+    // Drag state
+    this.dragging = false;
+    this.dragOffsetX = 0;
+    this.dragOffsetY = 0;
+    this.lastDragX = 0;
+    this.lastDragY = 0;
+    
+    // Idle float
+    this.floatPhase = Math.random() * Math.PI * 2;
+    this.floatSpeed = 0.3 + Math.random() * 0.3;
+    this.floatAmp = 3 + Math.random() * 4;
+    
+    // Transparency
+    this.alpha = cfg.alpha || 0.88;
+    
+    // Jiggle on nearby motion
+    this.jiggleAmount = 0;
+    this.jigglePhase = 0;
+    
+    // Pupil tracking
+    this.pupilOffsetX = 0;
+    this.pupilOffsetY = 0;
+    
+    // Giggle wobble
+    this.gigglePhase = 0;
+    
+    // Z-order
+    this.zIndex = cfg.zIndex || 0;
+    // Blob seed for organic shape variation
+    this._blobSeed = cfg.blobSeed || Math.random() * Math.PI * 2;
+  }
+
+  getRadius() {
+    if (this.shape === SHAPES.circle || this.shape === SHAPES.egg || this.shape === SHAPES.semicircle || this.shape === SHAPES.blob)
+      return this.size;
+    if (this.shape === SHAPES.rect || this.shape === SHAPES.pill)
+      return this.size * 0.7;
+    if (this.shape === SHAPES.triangle || this.shape === SHAPES.pentagon || this.shape === SHAPES.diamond)
+      return this.size * 0.65;
+    if (this.shape === SHAPES.star)
+      return this.size * 0.85;
+    if (this.shape === SHAPES.heart)
+      return this.size * 0.9;
+    if (this.shape === SHAPES.cloud)
+      return this.size * 0.95;
+    return this.size;
+  }
+
+  containsPoint(px, py) {
+    const r = this.getRadius();
+    return dist({x: px, y: py}, {x: this.x, y: this.y}) < r * 1.1;
+  }
+
+  setEmotion(e, intensity = 1) {
+    this.emotion = e;
+    this.emotionTimer = 0;
+    this.emotionIntensity = intensity;
+    if (e === 'giggle' || e === 'laughing') {
+      this.gigglePhase = 0;
+    }
+  }
+
+  update(dt, time, allChars, pointers) {
+    // Idle float
+    const floatY = Math.sin(time * this.floatSpeed + this.floatPhase) * this.floatAmp;
+    const floatX = Math.cos(time * this.floatSpeed * 0.7 + this.floatPhase) * this.floatAmp * 0.5;
+
+    if (!this.dragging) {
+      // Friction
+      this.vx *= 0.92;
+      this.vy *= 0.92;
+      this.x += this.vx;
+      this.y += this.vy;
+      
+      // Soft boundary
+      const pad = this.getRadius() * 0.6;
+      if (this.x < pad) { this.x = pad; this.vx *= -0.4; }
+      if (this.x > W - pad) { this.x = W - pad; this.vx *= -0.4; }
+      if (this.y < pad) { this.y = pad; this.vy *= -0.4; }
+      if (this.y > H - pad) { this.y = H - pad; this.vy *= -0.4; }
+    }
+
+    // Separation from other characters
+    for (const other of allChars) {
+      if (other === this) continue;
+      const d = dist(this, other);
+      const minDist = (this.getRadius() + other.getRadius()) * 0.75;
+      if (d < minDist && d > 0.1) {
+        const overlap = minDist - d;
+        const nx = (this.x - other.x) / d;
+        const ny = (this.y - other.y) / d;
+        const push = overlap * 0.08;
+        if (!this.dragging) {
+          this.vx += nx * push;
+          this.vy += ny * push;
+        }
+        if (!other.dragging) {
+          other.vx -= nx * push;
+          other.vy -= ny * push;
+        }
+        // Collision thump when moving fast enough
+        const relSpeed = Math.hypot(this.vx - other.vx, this.vy - other.vy);
+        if (relSpeed > 3) {
+          soundThrottled('collide-' + this.zIndex, () => soundForChar(this, 'collide'), 400);
+        }
+      }
+    }
+
+    // Squish spring physics
+    const squishStiff = 0.15;
+    const squishDamp = 0.7;
+    this.squishVx += (this.targetScaleX - this.scaleX) * squishStiff;
+    this.squishVy += (this.targetScaleY - this.scaleY) * squishStiff;
+    this.squishVx *= squishDamp;
+    this.squishVy *= squishDamp;
+    this.scaleX += this.squishVx;
+    this.scaleY += this.squishVy;
+    this.targetScaleX = lerp(this.targetScaleX, 1, 0.05);
+    this.targetScaleY = lerp(this.targetScaleY, 1, 0.05);
+
+    // Rotation spring
+    this.rotation = lerp(this.rotation, this.targetRotation, 0.08);
+
+    // Blink
+    this.blinkTimer--;
+    if (this.blinkTimer <= 0 && !this.isBlinking) {
+      this.isBlinking = true;
+      this.blinkDuration = 6;
+      this.blinkTimer = 100 + Math.random() * 200;
+    }
+    if (this.isBlinking) {
+      this.blinkDuration--;
+      if (this.blinkDuration <= 0) this.isBlinking = false;
+    }
+
+    // Emotion timer
+    this.emotionTimer += dt;
+    if (this.emotion !== 'idle' && this.emotionTimer > 120) {
+      this.emotion = 'idle';
+      this.emotionIntensity = 0;
+    }
+
+    // Giggle wobble
+    if (this.emotion === 'giggle' || this.emotion === 'laughing') {
+      this.gigglePhase += 0.4;
+      this.jiggleAmount = this.emotion === 'laughing' ? 4 : 2;
+    } else {
+      this.jiggleAmount *= 0.9;
+    }
+
+    // Pupil tracking - look at nearest pointer
+    let nearestPointer = null;
+    let nearestDist = Infinity;
+    for (const p of pointers) {
+      const d = dist(p, this);
+      if (d < nearestDist) { nearestDist = d; nearestPointer = p; }
+    }
+    if (nearestPointer && nearestDist < 300) {
+      const dx = nearestPointer.x - this.x;
+      const dy = nearestPointer.y - this.y;
+      const maxOffset = 4;
+      const angle = Math.atan2(dy, dx);
+      const strength = clamp(1 - nearestDist / 300, 0, 1);
+      this.pupilOffsetX = lerp(this.pupilOffsetX, Math.cos(angle) * maxOffset * strength, 0.1);
+      this.pupilOffsetY = lerp(this.pupilOffsetY, Math.sin(angle) * maxOffset * strength, 0.1);
+    } else {
+      this.pupilOffsetX = lerp(this.pupilOffsetX, 0, 0.05);
+      this.pupilOffsetY = lerp(this.pupilOffsetY, 0, 0.05);
+    }
+
+    this._floatX = floatX;
+    this._floatY = floatY;
+  }
+
+  draw(ctx, time) {
+    ctx.save();
+    const jx = this.jiggleAmount * Math.sin(this.gigglePhase);
+    const jy = this.jiggleAmount * Math.cos(this.gigglePhase * 1.3);
+    
+    const drawX = this.x + (this.dragging ? 0 : this._floatX) + jx;
+    const drawY = this.y + (this.dragging ? 0 : this._floatY) + jy;
+    
+    ctx.translate(drawX, drawY);
+    ctx.rotate(this.rotation);
+    ctx.scale(this.scaleX, this.scaleY);
+    ctx.globalAlpha = this.alpha;
+
+    // Draw shape
+    this._drawShape(ctx, time);
+    
+    // Draw face
+    this._drawFace(ctx, time);
+    
+    ctx.restore();
+  }
+
+  _drawShape(ctx, time) {
+    const s = this.size;
+    ctx.fillStyle = this.baseColor;
+
+    switch (this.shape) {
+      case SHAPES.circle:
+        ctx.beginPath();
+        ctx.arc(0, 0, s, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+
+      case SHAPES.rect:
+        const hs = s * 0.85;
+        const r = s * 0.08;
+        ctx.beginPath();
+        ctx.moveTo(-hs + r, -hs);
+        ctx.lineTo(hs - r, -hs);
+        ctx.quadraticCurveTo(hs, -hs, hs, -hs + r);
+        ctx.lineTo(hs, hs - r);
+        ctx.quadraticCurveTo(hs, hs, hs - r, hs);
+        ctx.lineTo(-hs + r, hs);
+        ctx.quadraticCurveTo(-hs, hs, -hs, hs - r);
+        ctx.lineTo(-hs, -hs + r);
+        ctx.quadraticCurveTo(-hs, -hs, -hs + r, -hs);
+        ctx.closePath();
+        ctx.fill();
+        break;
+
+      case SHAPES.triangle:
+        ctx.beginPath();
+        ctx.moveTo(0, -s);
+        ctx.lineTo(s * 0.9, s * 0.6);
+        ctx.lineTo(-s * 0.9, s * 0.6);
+        ctx.closePath();
+        ctx.fill();
+        break;
+
+      case SHAPES.semicircle:
+        ctx.beginPath();
+        ctx.arc(0, 0, s, Math.PI, 0);
+        ctx.closePath();
+        ctx.fill();
+        break;
+
+      case SHAPES.egg:
+        ctx.beginPath();
+        ctx.ellipse(0, 0, s * 0.75, s, 0, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+
+      case SHAPES.star: {
+        const pts = 5;
+        ctx.beginPath();
+        for (let i = 0; i < pts * 2; i++) {
+          const a = (i * Math.PI) / pts - Math.PI / 2;
+          const rad = i % 2 === 0 ? s : s * 0.42;
+          if (i === 0) ctx.moveTo(Math.cos(a) * rad, Math.sin(a) * rad);
+          else ctx.lineTo(Math.cos(a) * rad, Math.sin(a) * rad);
+        }
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.pentagon: {
+        ctx.beginPath();
+        for (let i = 0; i < 5; i++) {
+          const a = (i * Math.PI * 2) / 5 - Math.PI / 2;
+          if (i === 0) ctx.moveTo(Math.cos(a) * s, Math.sin(a) * s);
+          else ctx.lineTo(Math.cos(a) * s, Math.sin(a) * s);
+        }
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.heart: {
+        // Proper centered heart using two bezier arcs meeting at bottom tip
+        // Center of mass is roughly at 0,0
+        const hr = s * 0.52;
+        ctx.beginPath();
+        // Start at the bottom tip
+        ctx.moveTo(0, hr * 1.3);
+        // Left lobe
+        ctx.bezierCurveTo(-hr * 0.1, hr * 0.7, -hr * 1.5, hr * 0.5, -hr * 1.5, -hr * 0.15);
+        ctx.bezierCurveTo(-hr * 1.5, -hr * 0.85, -hr * 0.75, -hr * 1.2, 0, -hr * 0.6);
+        // Right lobe
+        ctx.bezierCurveTo(hr * 0.75, -hr * 1.2, hr * 1.5, -hr * 0.85, hr * 1.5, -hr * 0.15);
+        ctx.bezierCurveTo(hr * 1.5, hr * 0.5, hr * 0.1, hr * 0.7, 0, hr * 1.3);
+        ctx.closePath();
+        ctx.fill();
+        // Inner glow highlight
+        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        ctx.beginPath();
+        ctx.ellipse(-hr * 0.45, -hr * 0.55, hr * 0.38, hr * 0.22, -0.6, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.cloud: {
+        const cs = s * 0.55;
+        ctx.beginPath();
+        ctx.arc(-cs * 0.6, cs * 0.1, cs * 0.65, Math.PI, 0);
+        ctx.arc(cs * 0.4, -cs * 0.2, cs * 0.8, Math.PI, 0);
+        ctx.arc(cs * 1.1, cs * 0.25, cs * 0.5, Math.PI, 0);
+        ctx.lineTo(cs * 1.6, cs * 0.75);
+        ctx.arc(cs * 0.3, cs * 0.75, cs * 1.0, 0, Math.PI);
+        ctx.arc(-cs * 0.8, cs * 0.75, cs * 0.5, 0, Math.PI);
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.diamond: {
+        ctx.beginPath();
+        ctx.moveTo(0, -s);
+        ctx.lineTo(s * 0.7, 0);
+        ctx.lineTo(0, s);
+        ctx.lineTo(-s * 0.7, 0);
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.pill: {
+        const pw = s * 0.85;
+        const ph = s * 0.55;
+        ctx.beginPath();
+        ctx.arc(-pw * 0.35, 0, ph, Math.PI / 2, -Math.PI / 2);
+        ctx.arc(pw * 0.35, 0, ph, -Math.PI / 2, Math.PI / 2);
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.blob: {
+        // Organic wobbly blob
+        ctx.beginPath();
+        const bpts = 8;
+        for (let i = 0; i < bpts; i++) {
+          const a = (i / bpts) * Math.PI * 2;
+          const wobble = this._blobWobble ? this._blobWobble[i] : 1;
+          const r = s * (0.82 + 0.18 * Math.sin(i * 2.4 + (this._blobSeed || 0)));
+          const x = Math.cos(a) * r;
+          const y = Math.sin(a) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+    }
+
+    // Draw decorations
+    for (const deco of this.decorations) {
+      deco(ctx, s, time);
+    }
+  }
+
+  _drawFace(ctx, time) {
+    const s = this.size;
+    const es = this.eyes;
+    const eyeScale = es.scale || 1;
+    const eyeY = (es.yOffset || -0.15) * s;
+    const eyeSpacing = (es.spacing || 0.28) * s;
+    const eyeSize = s * 0.1 * eyeScale;
+    const pupilSize = eyeSize * 0.55;
+
+    // Draw eyes
+    const eyeL = { x: -eyeSpacing, y: eyeY };
+    const eyeR = { x: eyeSpacing, y: eyeY };
+
+    if (this.isBlinking) {
+      // Blink: draw lines
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(eyeL.x - eyeSize, eyeL.y);
+      ctx.lineTo(eyeL.x + eyeSize, eyeL.y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(eyeR.x - eyeSize, eyeR.y);
+      ctx.lineTo(eyeR.x + eyeSize, eyeR.y);
+      ctx.stroke();
+    } else {
+      // White of eyes
+      ctx.fillStyle = '#fff';
+      for (const eye of [eyeL, eyeR]) {
+        ctx.beginPath();
+        ctx.ellipse(eye.x, eye.y, eyeSize, eyeSize * 1.1, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Pupils
+      ctx.fillStyle = '#1a1a2e';
+      for (const eye of [eyeL, eyeR]) {
+        ctx.beginPath();
+        ctx.arc(eye.x + this.pupilOffsetX, eye.y + this.pupilOffsetY, pupilSize, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Pupil shine
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      for (const eye of [eyeL, eyeR]) {
+        ctx.beginPath();
+        ctx.arc(eye.x + this.pupilOffsetX - pupilSize * 0.3, eye.y + this.pupilOffsetY - pupilSize * 0.35, pupilSize * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Surprised wide eyes
+      if (this.emotion === 'surprised') {
+        ctx.strokeStyle = '#1a1a2e';
+        ctx.lineWidth = 1.5;
+        for (const eye of [eyeL, eyeR]) {
+          ctx.beginPath();
+          ctx.ellipse(eye.x, eye.y, eyeSize * 1.15, eyeSize * 1.25, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Cheek blush for happy/giggle
+    if (this.emotion === 'happy' || this.emotion === 'giggle' || this.emotion === 'laughing') {
+      ctx.fillStyle = 'rgba(255, 120, 150, 0.35)';
+      ctx.beginPath();
+      ctx.ellipse(eyeL.x - eyeSize * 0.5, eyeY + eyeSize * 2.2, eyeSize * 1.1, eyeSize * 0.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(eyeR.x + eyeSize * 0.5, eyeY + eyeSize * 2.2, eyeSize * 1.1, eyeSize * 0.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Mouth
+    const mouthY = eyeY + s * 0.28;
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.fillStyle = '#1a1a2e';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+
+    switch (this.emotion) {
+      case 'idle':
+        // Gentle smile
+        ctx.beginPath();
+        ctx.arc(0, mouthY - s * 0.05, s * 0.08, 0.15, Math.PI - 0.15);
+        ctx.stroke();
+        break;
+
+      case 'happy':
+        // Big smile
+        ctx.beginPath();
+        ctx.arc(0, mouthY - s * 0.06, s * 0.12, 0.1, Math.PI - 0.1);
+        ctx.stroke();
+        // Teeth hint
+        ctx.beginPath();
+        ctx.arc(0, mouthY - s * 0.06, s * 0.12, 0.1, Math.PI - 0.1);
+        ctx.lineTo(-s * 0.12 * Math.cos(Math.PI - 0.1), mouthY - s * 0.06 + s * 0.12 * Math.sin(Math.PI - 0.1));
+        ctx.fillStyle = 'rgba(26,26,46,0.15)';
+        ctx.fill();
+        break;
+
+      case 'surprised':
+        // O mouth
+        ctx.fillStyle = '#1a1a2e';
+        ctx.beginPath();
+        ctx.ellipse(0, mouthY, s * 0.06, s * 0.08, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Pink inside
+        ctx.fillStyle = '#ff8fab';
+        ctx.beginPath();
+        ctx.ellipse(0, mouthY, s * 0.04, s * 0.055, 0, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+
+      case 'giggle':
+        // Wavy smile
+        const waveAmp = 2 * Math.sin(this.gigglePhase * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.1, mouthY + waveAmp);
+        ctx.quadraticCurveTo(-s * 0.05, mouthY + s * 0.06 - waveAmp, 0, mouthY + waveAmp);
+        ctx.quadraticCurveTo(s * 0.05, mouthY + s * 0.06 - waveAmp, s * 0.1, mouthY + waveAmp);
+        ctx.strokeStyle = '#1a1a2e';
+        ctx.stroke();
+        break;
+
+      case 'laughing':
+        // Wide open laugh
+        ctx.fillStyle = '#1a1a2e';
+        ctx.beginPath();
+        ctx.ellipse(0, mouthY, s * 0.1, s * 0.07 + Math.abs(Math.sin(this.gigglePhase)) * s * 0.04, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ff8fab';
+        ctx.beginPath();
+        ctx.ellipse(0, mouthY + s * 0.02, s * 0.06, s * 0.03 + Math.abs(Math.sin(this.gigglePhase)) * s * 0.02, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Teeth
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(-s * 0.06, mouthY - s * 0.02, s * 0.12, s * 0.025);
+        break;
+    }
+
+    // Accessories
+    if (this.accessories.glasses) {
+      this._drawGlasses(ctx, eyeL, eyeR, eyeSize);
+    }
+  }
+
+  _drawGlasses(ctx, eyeL, eyeR, eyeSize) {
+    const gs = eyeSize * 1.8;
+    ctx.strokeStyle = this.accessories.glassesColor || '#FFD100';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(eyeL.x, eyeL.y, gs, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(eyeR.x, eyeR.y, gs, 0, Math.PI * 2);
+    ctx.stroke();
+    // Bridge
+    ctx.beginPath();
+    ctx.moveTo(eyeL.x + gs, eyeL.y);
+    ctx.lineTo(eyeR.x - gs, eyeR.y);
+    ctx.stroke();
+    // Temple arms
+    ctx.beginPath();
+    ctx.moveTo(eyeR.x + gs, eyeR.y);
+    ctx.lineTo(eyeR.x + gs + eyeSize * 2, eyeR.y - eyeSize * 0.5);
+    ctx.stroke();
+  }
+}
+
+// ─── Create Characters ───
+let characters = [];
+
+function initCharacters() {
+  const cx = W / 2;
+  const cy = H / 2;
+  // Responsive base size: scales down on mobile, caps on large screens
+  const minDim = Math.min(W, H);
+  const baseSize = Math.max(36, Math.min(minDim * 0.117, 104)); // +30% from 0.09→0.117, 28→36, 80→104
+
+  // Grid-scatter positions: divide screen into 3x4 soft zones
+  function pos(col, row, offsetX = 0, offsetY = 0) {
+    const cols = 4, rows = 3;
+    const marginX = W * 0.1, marginY = H * 0.1;
+    const cellW = (W - marginX * 2) / cols;
+    const cellH = (H - marginY * 2) / rows;
+    return {
+      x: marginX + cellW * col + cellW * 0.5 + offsetX * baseSize,
+      y: marginY + cellH * row + cellH * 0.5 + offsetY * baseSize
+    };
+  }
+
+  characters = [
+    // ── ORIGINAL 5 ──
+
+    // Teal semicircle
+    new Character({
+      shape: SHAPES.semicircle,
+      color: '#42C9BA',
+      size: baseSize * 1.0,
+      ...pos(0, 0),
+      rotation: -0.5,
+      eyes: { yOffset: -0.3, spacing: 0.22, scale: 1.0 },
+      alpha: 0.85,
+      zIndex: 1
+    }),
+
+    // Blue rectangle
+    new Character({
+      shape: SHAPES.rect,
+      color: '#0052FF',
+      size: baseSize * 1.0,
+      ...pos(1, 0, 0.3),
+      rotation: -0.35,
+      eyes: { yOffset: -0.1, spacing: 0.25, scale: 1.0 },
+      alpha: 0.85,
+      zIndex: 2,
+      decorations: [
+        (ctx, s) => {
+          ctx.strokeStyle = 'rgba(255, 200, 100, 0.5)';
+          ctx.lineWidth = 2;
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            const y = s * 0.15 + i * s * 0.15;
+            ctx.moveTo(-s * 0.3, y);
+            ctx.quadraticCurveTo(-s * 0.15, y - 6, 0, y);
+            ctx.quadraticCurveTo(s * 0.15, y + 6, s * 0.3, y);
+            ctx.stroke();
+          }
+        }
+      ]
+    }),
+
+    // Yellow circle with pie slice
+    new Character({
+      shape: SHAPES.circle,
+      color: '#FFD100',
+      size: baseSize * 1.0,
+      ...pos(0, 1, 0, 0.3),
+      eyes: { yOffset: -0.15, spacing: 0.22, scale: 1.0 },
+      alpha: 0.85,
+      zIndex: 3,
+      decorations: [
+        (ctx, s) => {
+          ctx.fillStyle = '#FF5733';
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.arc(0, 0, s, -0.8, -0.2);
+          ctx.closePath();
+          ctx.fill();
+        }
+      ]
+    }),
+
+    // Purple square with accent
+    new Character({
+      shape: SHAPES.rect,
+      color: '#A259D6',
+      size: baseSize * 1.0,
+      ...pos(2, 1, 0.2),
+      eyes: { yOffset: -0.05, spacing: 0.28, scale: 1.0 },
+      alpha: 0.85,
+      zIndex: 4,
+      decorations: [
+        (ctx, s) => {
+          ctx.fillStyle = '#FFD100';
+          const hs = s * 0.85;
+          ctx.beginPath();
+          ctx.moveTo(-hs, -hs);
+          ctx.lineTo(-hs + s * 0.5, -hs);
+          ctx.lineTo(-hs, -hs + s * 0.6);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255, 129, 173, 0.5)';
+          ctx.lineWidth = 1.5;
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            const y = -s * 0.1 + i * s * 0.18;
+            const startX = -s * 0.2;
+            ctx.moveTo(startX, y);
+            for (let j = 0; j < 4; j++) {
+              ctx.quadraticCurveTo(
+                startX + j * s * 0.12 + s * 0.06, y + (j % 2 ? 5 : -5),
+                startX + (j + 1) * s * 0.12, y
+              );
+            }
+            ctx.stroke();
+          }
+        }
+      ]
+    }),
+
+    // Blue triangle with glasses
+    new Character({
+      shape: SHAPES.triangle,
+      color: '#1DA1F2',
+      size: baseSize * 1.0,
+      ...pos(3, 0, -0.2),
+      eyes: { yOffset: 0.05, spacing: 0.22, scale: 1.0 },
+      accessories: { glasses: true, glassesColor: '#FFD100' },
+      alpha: 0.85,
+      zIndex: 5
+    }),
+
+    // Orange striped ball
+    new Character({
+      shape: SHAPES.circle,
+      color: '#FF5733',
+      size: baseSize * 1.0,
+      ...pos(3, 1, -0.5),
+      eyes: { yOffset: -0.15, spacing: 0.25, scale: 1.0 },
+      alpha: 0.85,
+      zIndex: 6,
+      decorations: [
+        (ctx, s) => {
+          ctx.strokeStyle = '#0052FF';
+          ctx.lineWidth = 3;
+          for (let i = -3; i <= 3; i++) {
+            const y = i * s * 0.2;
+            const halfW = Math.sqrt(Math.max(0, s * s - y * y)) * 0.9;
+            if (halfW < 2) continue;
+            ctx.beginPath();
+            ctx.moveTo(-halfW, y);
+            ctx.lineTo(halfW, y);
+            ctx.stroke();
+          }
+        }
+      ]
+    }),
+
+    // Yellow zigzag teeth guy
+    new Character({
+      shape: SHAPES.circle,
+      color: '#FFD100',
+      size: baseSize * 1.0,
+      ...pos(1, 2),
+      eyes: { yOffset: -0.2, spacing: 0.25, scale: 1.0 },
+      alpha: 0.85,
+      zIndex: 7,
+      decorations: [
+        (ctx, s) => {
+          ctx.fillStyle = '#FF81AD';
+          ctx.beginPath();
+          ctx.arc(0, 0, s, 0.15, Math.PI - 0.15);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = '#42C9BA';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          const tw = s * 0.6;
+          const n = 5;
+          const step = tw / n;
+          ctx.moveTo(-tw / 2, s * 0.1);
+          for (let i = 0; i <= n; i++) {
+            ctx.lineTo(-tw / 2 + i * step, s * 0.1 + (i % 2 ? s * 0.2 : 0));
+          }
+          ctx.stroke();
+        }
+      ]
+    }),
+
+    // ── 7 NEW CHARACTERS ──
+
+    // ① Pink heart — floaty, gentle
+    new Character({
+      shape: SHAPES.heart,
+      color: '#FF81AD',
+      size: baseSize * 1.0,
+      ...pos(2, 0, -0.2, 0.1),
+      rotation: 0.1,
+      eyes: { yOffset: -0.25, spacing: 0.32, scale: 1.0 },
+      alpha: 0.92,
+      zIndex: 8,
+      decorations: [
+        (ctx, s) => {
+          const hr = s * 0.52;
+          ctx.fillStyle = 'rgba(255,255,255,0.5)';
+          [[hr * 0.6, -hr * 0.1], [-hr * 0.3, hr * 0.5], [hr * 0.0, -hr * 0.7]].forEach(([x, y]) => {
+            ctx.beginPath();
+            ctx.arc(x, y, s * 0.045, 0, Math.PI * 2);
+            ctx.fill();
+          });
+        }
+      ]
+    }),
+
+    // ② Green star — energetic, spiky
+    new Character({
+      shape: SHAPES.star,
+      color: '#28A745',
+      size: baseSize * 1.0,
+      ...pos(0, 2, 0.4, -0.2),
+      rotation: 0.2,
+      eyes: { yOffset: -0.05, spacing: 0.26, scale: 1.0 },
+      alpha: 0.88,
+      zIndex: 9,
+      decorations: [
+        (ctx, s) => {
+          ctx.fillStyle = '#FFD100';
+          ctx.beginPath();
+          ctx.arc(0, 0, s * 0.28, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      ]
+    }),
+
+    // ③ Sky blue cloud — dreamy
+    new Character({
+      shape: SHAPES.cloud,
+      color: '#B8E4FF',
+      size: baseSize * 1.0,
+      ...pos(2, 2, -0.2, 0.1),
+      rotation: 0,
+      eyes: { yOffset: 0.3, spacing: 0.4, scale: 1.0 },
+      alpha: 0.9,
+      zIndex: 10,
+      decorations: [
+        (ctx, s) => {
+          ctx.fillStyle = '#5BB8FF';
+          const cs = s * 0.55;
+          [[-cs * 0.6, cs * 0.9], [0, cs * 1.1], [cs * 0.5, cs * 0.85]].forEach(([x, y]) => {
+            ctx.beginPath();
+            ctx.ellipse(x, y, s * 0.04, s * 0.07, 0, 0, Math.PI * 2);
+            ctx.fill();
+          });
+        }
+      ]
+    }),
+
+    // ④ Hot coral diamond — cool angular dude
+    new Character({
+      shape: SHAPES.diamond,
+      color: '#FF6B6B',
+      size: baseSize * 1.0,
+      ...pos(3, 2),
+      rotation: 0.05,
+      eyes: { yOffset: -0.12, spacing: 0.24, scale: 1.0 },
+      alpha: 0.87,
+      zIndex: 11,
+      decorations: [
+        (ctx, s) => {
+          // Center stripe
+          ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+          ctx.lineWidth = s * 0.06;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.25, 0);
+          ctx.lineTo(s * 0.25, 0);
+          ctx.stroke();
+        }
+      ]
+    }),
+
+    // ⑤ Mint green pentagon — chill geometric buddy
+    new Character({
+      shape: SHAPES.pentagon,
+      color: '#4ECDC4',
+      size: baseSize * 1.0,
+      ...pos(1, 1, -0.5),
+      rotation: 0.15,
+      eyes: { yOffset: 0.0, spacing: 0.26, scale: 1.0 },
+      alpha: 0.87,
+      zIndex: 12,
+      decorations: [
+        (ctx, s) => {
+          // Inner pentagon
+          ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          for (let i = 0; i < 5; i++) {
+            const a = (i * Math.PI * 2) / 5 - Math.PI / 2;
+            if (i === 0) ctx.moveTo(Math.cos(a) * s * 0.55, Math.sin(a) * s * 0.55);
+            else ctx.lineTo(Math.cos(a) * s * 0.55, Math.sin(a) * s * 0.55);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+      ]
+    }),
+
+    // ⑥ Purple pill — sleepy elongated guy
+    new Character({
+      shape: SHAPES.pill,
+      color: '#C77DFF',
+      size: baseSize * 1.0,
+      ...pos(3, 1, -0.2, 0.5),
+      rotation: -0.25,
+      eyes: { yOffset: -0.05, spacing: 0.4, scale: 1.0 },
+      alpha: 0.87,
+      zIndex: 13,
+      decorations: [
+        (ctx, s) => {
+          // Dividing line in center
+          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, -s * 0.45);
+          ctx.lineTo(0, s * 0.45);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      ]
+    }),
+
+    // ⑦ Orange blob — wobbly alien
+    new Character({
+      shape: SHAPES.blob,
+      color: '#FF9F1C',
+      size: baseSize * 1.0,
+      ...pos(0, 1, 1.0, -0.5),
+      rotation: 0,
+      blobSeed: 1.2,
+      eyes: { yOffset: -0.1, spacing: 0.28, scale: 1.0 },
+      alpha: 0.88,
+      zIndex: 14,
+      decorations: [
+        (ctx, s) => {
+          // Spots
+          ctx.fillStyle = 'rgba(255,255,255,0.25)';
+          [[-s * 0.25, s * 0.3], [s * 0.3, -s * 0.15], [-s * 0.1, -s * 0.4]].forEach(([x, y]) => {
+            ctx.beginPath();
+            ctx.arc(x, y, s * 0.1, 0, Math.PI * 2);
+            ctx.fill();
+          });
+        }
+      ]
+    }),
+  ];
+}
+
+// ─── Sparkle Particles ───
+class Sparkle {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = (Math.random() - 0.5) * 3;
+    this.vy = (Math.random() - 0.5) * 3 - 1;
+    this.life = 1;
+    this.decay = 0.02 + Math.random() * 0.02;
+    this.size = 2 + Math.random() * 3;
+    this.color = ['#FFD100', '#FF81AD', '#42C9BA', '#0052FF', '#FF5733'][Math.floor(Math.random() * 5)];
+    this.type = Math.random() > 0.5 ? 'star' : 'circle';
+  }
+  update() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.vy += 0.04;
+    this.life -= this.decay;
+  }
+  draw(ctx) {
+    ctx.globalAlpha = this.life;
+    ctx.fillStyle = this.color;
+    if (this.type === 'star') {
+      drawStar(ctx, this.x, this.y, this.size, 4);
+    } else {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawStar(ctx, cx, cy, r, points) {
+  ctx.beginPath();
+  for (let i = 0; i < points * 2; i++) {
+    const a = (i * Math.PI) / points - Math.PI / 2;
+    const rad = i % 2 === 0 ? r : r * 0.4;
+    const method = i === 0 ? 'moveTo' : 'lineTo';
+    ctx[method](cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+let sparkles = [];
+
+// ─── Input Handling ───
+let activePointers = new Map(); // id -> {x, y, char}
+let allPointerPositions = []; // for pupil tracking
+
+function getCharAt(x, y) {
+  // Return topmost character
+  for (let i = characters.length - 1; i >= 0; i--) {
+    if (characters[i].containsPoint(x, y)) return characters[i];
+  }
+  return null;
+}
+
+function onPointerDown(id, x, y) {
+  unlockAudio();
+  const char = getCharAt(x, y);
+  if (char) {
+    char.dragging = true;
+    char.dragOffsetX = x - char.x;
+    char.dragOffsetY = y - char.y;
+    char.lastDragX = x;
+    char.lastDragY = y;
+    char.vx = 0; char.vy = 0;
+    
+    // Squish on grab
+    char.targetScaleX = 1.15;
+    char.targetScaleY = 0.88;
+    char.setEmotion('surprised', 0.8);
+    soundForChar(char, 'grab');
+    
+    // Bring to front
+    const maxZ = Math.max(...characters.map(c => c.zIndex));
+    char.zIndex = maxZ + 1;
+    
+    activePointers.set(id, { x, y, char });
+    
+    // Spawn sparkles
+    for (let i = 0; i < 5; i++) {
+      sparkles.push(new Sparkle(x, y));
+    }
+  } else {
+    activePointers.set(id, { x, y, char: null });
+  }
+}
+
+function onPointerMove(id, x, y) {
+  const ptr = activePointers.get(id);
+  if (!ptr) return;
+  
+  ptr.x = x; ptr.y = y;
+  
+  if (ptr.char && ptr.char.dragging) {
+    const char = ptr.char;
+    const prevX = char.x;
+    const prevY = char.y;
+    
+    char.x = x - char.dragOffsetX;
+    char.y = y - char.dragOffsetY;
+    
+    // Velocity for throw
+    char.lastDragX = x;
+    char.lastDragY = y;
+    
+    // Speed-based squish
+    const speed = Math.hypot(char.x - prevX, char.y - prevY);
+    if (speed > 2) {
+      const angle = Math.atan2(char.y - prevY, char.x - prevX);
+      char.targetScaleX = 1 + speed * 0.008;
+      char.targetScaleY = 1 - speed * 0.006;
+      char.targetRotation = angle * 0.15;
+      
+      if (speed > 8 && char.emotion !== 'laughing') {
+        char.setEmotion('laughing');
+        soundThrottled('laugh', () => soundForChar(char, 'laugh'), 350);
+      } else if (speed > 4 && char.emotion !== 'laughing') {
+        char.setEmotion('giggle');
+        soundThrottled('giggle', () => soundForChar(char, 'giggle'), 220);
+      }
+      
+      // Trail sparkles
+      if (Math.random() > 0.6) {
+        sparkles.push(new Sparkle(char.x, char.y));
+      }
+    }
+    
+    // Nudge nearby characters - they react
+    for (const other of characters) {
+      if (other === char) continue;
+      const d = dist(char, other);
+      if (d < char.getRadius() + other.getRadius() + 20) {
+        if (other.emotion === 'idle') {
+          other.setEmotion(speed > 6 ? 'surprised' : 'happy');
+        }
+        // Squish the other slightly
+        const nx = (other.x - char.x) / (d || 1);
+        const ny = (other.y - char.y) / (d || 1);
+        other.targetScaleX = 1 + nx * 0.08;
+        other.targetScaleY = 1 + ny * 0.08;
+      }
+    }
+  }
+}
+
+function onPointerUp(id) {
+  const ptr = activePointers.get(id);
+  if (ptr && ptr.char) {
+    const char = ptr.char;
+    char.dragging = false;
+    
+    // Release squish bounce
+    char.targetScaleX = 0.9;
+    char.targetScaleY = 1.12;
+    char.targetRotation = 0;
+    char.setEmotion('happy');
+    soundForChar(char, 'release');
+    
+    // Burst of sparkles
+    for (let i = 0; i < 8; i++) {
+      sparkles.push(new Sparkle(char.x, char.y));
+    }
+  }
+  activePointers.delete(id);
+}
+
+// Touch events
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    onPointerDown(t.identifier, t.clientX, t.clientY);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    onPointerMove(t.identifier, t.clientX, t.clientY);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  for (const t of e.changedTouches) onPointerUp(t.identifier);
+});
+canvas.addEventListener('touchcancel', e => {
+  for (const t of e.changedTouches) onPointerUp(t.identifier);
+});
+
+// Mouse events
+let mouseDown = false;
+canvas.addEventListener('mousedown', e => {
+  mouseDown = true;
+  onPointerDown('mouse', e.clientX, e.clientY);
+});
+canvas.addEventListener('mousemove', e => {
+  if (mouseDown) onPointerMove('mouse', e.clientX, e.clientY);
+  // Track mouse for pupil tracking even when not dragging
+  allPointerPositions = allPointerPositions.filter(p => p.id !== 'mouse-hover');
+  allPointerPositions.push({ id: 'mouse-hover', x: e.clientX, y: e.clientY });
+});
+canvas.addEventListener('mouseup', () => { mouseDown = false; onPointerUp('mouse'); });
+canvas.addEventListener('mouseleave', () => { mouseDown = false; onPointerUp('mouse'); });
+
+// ─── MediaPipe Hands ───
+let handLandmarks = [];
+let cameraActive = false;
+const videoEl = document.getElementById('webcamVideo');
+const videoContainer = document.getElementById('videoContainer');
+let mpHands = null;
+let mpCamera = null;
+
+document.getElementById('toggleCam').addEventListener('click', async () => {
+  if (cameraActive) {
+    stopCamera();
+  } else {
+    await startCamera();
+  }
+});
+
+async function startCamera() {
+  try {
+    if (!mpHands) {
+      mpHands = new Hands({
+        locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`
+      });
+      mpHands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 0,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+      mpHands.onResults(onHandResults);
+    }
+
+    mpCamera = new Camera(videoEl, {
+      onFrame: async () => { await mpHands.send({ image: videoEl }); },
+      width: 320, height: 240
+    });
+    await mpCamera.start();
+    cameraActive = true;
+    videoContainer.classList.add('active');
+    document.getElementById('toggleCam').textContent = '✋';
+  } catch (err) {
+    console.warn('Camera error:', err);
+  }
+}
+
+function stopCamera() {
+  if (mpCamera) {
+    mpCamera.stop();
+    mpCamera = null;
+  }
+  cameraActive = false;
+  handLandmarks = [];
+  videoContainer.classList.remove('active');
+  document.getElementById('toggleCam').textContent = '🖐️';
+}
+
+function onHandResults(results) {
+  handLandmarks = [];
+  if (results.multiHandLandmarks) {
+    for (const hand of results.multiHandLandmarks) {
+      // Index fingertip (8), middle fingertip (12), thumb tip (4), wrist (0)
+      const tips = [4, 8, 12, 16, 20];
+      for (const idx of tips) {
+        const lm = hand[idx];
+        handLandmarks.push({
+          x: (1 - lm.x) * W, // mirror
+          y: lm.y * H
+        });
+      }
+      // Palm center (wrist + middle base average)
+      const wrist = hand[0];
+      const midBase = hand[9];
+      handLandmarks.push({
+        x: (1 - (wrist.x + midBase.x) / 2) * W,
+        y: ((wrist.y + midBase.y) / 2) * H,
+        isPalm: true
+      });
+    }
+  }
+}
+
+// Process hand landmarks as virtual pointers
+let handPointers = new Map();
+
+function processHandInput() {
+  // Clear old hand pointers
+  for (const [id] of handPointers) {
+    if (!handLandmarks.some((_, i) => `hand-${i}` === id)) {
+      const ptr = handPointers.get(id);
+      if (ptr && ptr.char) {
+        ptr.char.dragging = false;
+        ptr.char.targetScaleX = 0.9;
+        ptr.char.targetScaleY = 1.12;
+        ptr.char.setEmotion('happy');
+      }
+      handPointers.delete(id);
+    }
+  }
+
+  for (let i = 0; i < handLandmarks.length; i++) {
+    const lm = handLandmarks[i];
+    const id = `hand-${i}`;
+
+    // Interact with characters
+    const char = getCharAt(lm.x, lm.y);
+    
+    if (char) {
+      if (!handPointers.has(id)) {
+        // New touch
+        char.targetScaleX = 1.12;
+        char.targetScaleY = 0.9;
+        char.setEmotion('giggle');
+        soundThrottled('handtouch', () => soundForChar(char, 'grab'), 250);
+        handPointers.set(id, { char, lastX: lm.x, lastY: lm.y });
+      } else {
+        const prev = handPointers.get(id);
+        const speed = Math.hypot(lm.x - prev.lastX, lm.y - prev.lastY);
+        
+        if (speed > 3) {
+          // Push character
+          char.vx += (lm.x - prev.lastX) * 0.3;
+          char.vy += (lm.y - prev.lastY) * 0.3;
+          char.setEmotion(speed > 10 ? 'laughing' : 'giggle');
+          if (speed > 10) {
+            soundThrottled('handlaugh', () => soundForChar(char, 'laugh'), 350);
+          } else {
+            soundThrottled('handgiggle', () => soundForChar(char, 'giggle'), 220);
+          }
+          
+          // Squish in direction of motion
+          const angle = Math.atan2(lm.y - prev.lastY, lm.x - prev.lastX);
+          char.targetScaleX = 1 + speed * 0.005;
+          char.targetScaleY = 1 - speed * 0.004;
+          
+          if (Math.random() > 0.7) sparkles.push(new Sparkle(lm.x, lm.y));
+        } else {
+          // Gentle tickle
+          if (char.emotion === 'idle') char.setEmotion('happy');
+          char.jiggleAmount = 2;
+          char.gigglePhase += 0.2;
+        }
+        
+        prev.lastX = lm.x;
+        prev.lastY = lm.y;
+      }
+    } else {
+      // Check if hand just left a character
+      if (handPointers.has(id) && handPointers.get(id).char) {
+        const prev = handPointers.get(id);
+        prev.char.setEmotion('happy');
+      }
+      handPointers.set(id, { char: null, lastX: lm.x, lastY: lm.y });
+    }
+  }
+}
+
+// ─── Main Loop ───
+let lastTime = performance.now();
+let frame = 0;
+
+function loop(now) {
+  requestAnimationFrame(loop);
+  const dt = Math.min((now - lastTime) / 16.67, 3);
+  lastTime = now;
+  frame++;
+  const time = now * 0.001;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  // Build pointer list for pupil tracking
+  allPointerPositions = allPointerPositions.filter(p => p.id === 'mouse-hover');
+  for (const [, ptr] of activePointers) {
+    allPointerPositions.push({ id: 'touch', x: ptr.x, y: ptr.y });
+  }
+  for (const lm of handLandmarks) {
+    allPointerPositions.push({ id: 'hand', x: lm.x, y: lm.y });
+  }
+
+  // Process hand input
+  if (handLandmarks.length > 0) {
+    processHandInput();
+  }
+
+  // Update characters
+  for (const char of characters) {
+    char.update(dt, time, characters, allPointerPositions);
+  }
+
+  // Sort by zIndex for drawing
+  const sorted = [...characters].sort((a, b) => a.zIndex - b.zIndex);
+
+  // Draw background decorations (small sparkle stars fixed)
+  drawBgDecorations(ctx, time);
+
+  // Draw characters
+  for (const char of sorted) {
+    char.draw(ctx, time);
+  }
+
+  // Draw hand landmarks
+  if (handLandmarks.length > 0) {
+    ctx.globalAlpha = 0.25;
+    for (const lm of handLandmarks) {
+      ctx.fillStyle = lm.isPalm ? '#FF81AD' : '#42C9BA';
+      ctx.beginPath();
+      ctx.arc(lm.x, lm.y, lm.isPalm ? 8 : 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Update and draw sparkles
+  for (let i = sparkles.length - 1; i >= 0; i--) {
+    sparkles[i].update();
+    sparkles[i].draw(ctx);
+    if (sparkles[i].life <= 0) sparkles.splice(i, 1);
+  }
+}
+
+// Background decorations
+const bgStars = [];
+function initBgDecorations() {
+  for (let i = 0; i < 22; i++) {
+    bgStars.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      size: 2 + Math.random() * 3.5,
+      color: ['#FFD100', '#42C9BA', '#FF81AD', '#C77DFF', '#4ECDC4', '#fff'][Math.floor(Math.random() * 6)],
+      type: ['star', 'diamond', 'dot'][Math.floor(Math.random() * 3)],
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+}
+
+function drawBgDecorations(ctx, time) {
+  for (const s of bgStars) {
+    ctx.globalAlpha = 0.18 + Math.sin(time * 1.5 + s.phase) * 0.12;
+    ctx.fillStyle = s.color;
+    
+    if (s.type === 'star') {
+      drawStar(ctx, s.x, s.y, s.size, 4);
+    } else if (s.type === 'diamond') {
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillRect(-s.size / 2, -s.size / 2, s.size, s.size);
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.size * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─── Init ───
+initCharacters();
+initBgDecorations();
+window.addEventListener('resize', () => {
+  resize();
+  // Reposition characters and decorations for new screen size
+  initCharacters();
+  bgStars.length = 0;
+  initBgDecorations();
+});
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
