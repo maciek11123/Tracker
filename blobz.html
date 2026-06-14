@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Illustrated Character Toy</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body,html{width:100%;height:100%;overflow:hidden;background:#000000;touch-action:none;-webkit-user-select:none;user-select:none}
+canvas{display:block;width:100%;height:100%}
+#handBtn,#muteBtn{position:fixed;bottom:16px;z-index:10;width:48px;height:48px;border-radius:50%;border:none;background:rgba(255,255,255,0.2);color:#fff;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:background .2s,transform .15s}
+#handBtn{right:16px}
+#muteBtn{right:72px}
+#handBtn.active{background:rgba(40,180,99,0.8)}
+#muteBtn.muted{background:rgba(180,40,40,0.7)}
+#handBtn:active,#muteBtn:active{transform:scale(0.9)}
+#webcamWrap{position:fixed;bottom:72px;right:16px;z-index:10;width:160px;height:120px;border-radius:12px;overflow:hidden;display:none;border:2px solid rgba(255,255,255,0.3);box-shadow:0 4px 20px rgba(0,0,0,0.3)}
+#webcamWrap video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="handBtn" title="Toggle Hand Tracking">✋</button>
+<button id="muteBtn" title="Toggle Sound">🔊</button>
+<div id="webcamWrap"><video id="webcam" playsinline autoplay muted></video></div>
+<script>
+// ===== CANVAS SETUP =====
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, dpr;
+function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+
+// ===== HELPERS =====
+function rand(a, b) { return a + Math.random() * (b - a); }
+function getPaletteColor() {
+    // Defined as HSL objects to allow for procedural variation
+    const baseHues = [
+        {h: 227, s: 61, l: 45}, // Dark Blue
+        {h: 328, s: 88, l: 68}, // Pink
+        {h: 9, s: 90, l: 65},   // Coral
+        {h: 213, s: 85, l: 68}, // Medium Blue
+        {h: 49, s: 96, l: 63},  // Yellow
+        {h: 136, s: 53, l: 53}, // Green
+        {h: 208, s: 83, l: 81}  // Light Blue
+    ];
+    
+    const base = baseHues[Math.floor(Math.random() * baseHues.length)];
+    
+    // Add random variations so no two characters share the exact same hex code
+    const hShift = rand(-15, 15);
+    const sShift = rand(-10, 10);
+    const lShift = rand(-10, 10);
+    
+    return `hsl(${base.h + hShift}, ${base.s + sShift}%, ${base.l + lShift}%)`;
+}
+
+// ===== SOUND ENGINE (Web Audio API) =====
+const SFX = (() => {
+    let ctx = null, master = null, sfxGain = null;
+    let muted = false, started = false;
+    const pentatonic = [261.6, 293.7, 329.6, 392.0, 440.0, 523.3, 587.3, 659.3];
+
+    function init() {
+        if (ctx) return;
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        master = ctx.createGain();
+        master.gain.value = 1;
+        master.connect(ctx.destination);
+        sfxGain = ctx.createGain();
+        sfxGain.gain.value = 0.35;
+        sfxGain.connect(master);
+    }
+
+    function unlock() {
+        if (started) return;
+        init();
+        if (ctx.state === 'suspended') ctx.resume();
+        started = true;
+    }
+
+    function pickUp() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(350, now);
+        o.frequency.exponentialRampToValueAtTime(900, now + 0.12);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.15, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.22);
+    }
+
+    function drop() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(600, now);
+        o.frequency.exponentialRampToValueAtTime(180, now + 0.15);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.18, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.32);
+    }
+
+    function bump() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'triangle';
+        o.frequency.setValueAtTime(220 + Math.random() * 60, now);
+        o.frequency.exponentialRampToValueAtTime(120, now + 0.06);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.08, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+        const f = ctx.createBiquadFilter();
+        f.type = 'lowpass'; f.frequency.value = 800;
+        o.connect(f); f.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.12);
+    }
+
+    function wallHit() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(150, now);
+        o.frequency.exponentialRampToValueAtTime(60, now + 0.08);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.1, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.17);
+    }
+
+    function sparkle() {
+        if (!ctx || muted) return;
+        const freq = pentatonic[Math.floor(Math.random() * pentatonic.length)] * 2;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.value = freq;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.04, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.45);
+    }
+
+    function giggle() {
+        if (!ctx || muted) return;
+        const baseFreq = 500 + Math.random() * 200;
+        for (let i = 0; i < 3; i++) {
+            const now = ctx.currentTime + i * 0.07;
+            const o = ctx.createOscillator();
+            o.type = 'sine';
+            o.frequency.setValueAtTime(baseFreq + i * 80, now);
+            o.frequency.exponentialRampToValueAtTime(baseFreq + i * 80 + 100, now + 0.04);
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0.06, now);
+            g.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+            o.connect(g); g.connect(sfxGain);
+            o.start(now); o.stop(now + 0.1);
+        }
+    }
+
+    let lastDragSound = 0;
+    function dragWobble(speed) {
+        if (!ctx || muted) return;
+        const now = performance.now();
+        if (now - lastDragSound < 80) return;
+        lastDragSound = now;
+        const t = ctx.currentTime;
+        const freq = 200 + speed * 30;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.value = Math.min(freq, 800);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(Math.min(speed * 0.006, 0.05), t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+        o.connect(g); g.connect(sfxGain);
+        o.start(t); o.stop(t + 0.1);
+    }
+
+    function surprised() {
+        if (!ctx || muted) return;
+        const now = ctx.currentTime;
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(400, now);
+        o.frequency.exponentialRampToValueAtTime(600, now + 0.05);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.05, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+        o.connect(g); g.connect(sfxGain);
+        o.start(now); o.stop(now + 0.2);
+    }
+
+    function toggleMute() {
+        muted = !muted;
+        if (master) master.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.1);
+        return muted;
+    }
+
+    return { unlock, pickUp, drop, bump, wallHit, sparkle, giggle, dragWobble, surprised, toggleMute };
+})();
+
+// ===== SPARKLE PARTICLES =====
+let sparkles = [];
+function spawnSparkles(x, y, count, color, typeOverride) {
+    for (let i = 0; i < count; i++) {
+        let type = typeOverride || (Math.random() > 0.4 ? 'star' : 'circle');
+        let vx = rand(-4, 4);
+        let vy = rand(-5, 2);
+        let maxLife = rand(0.4, 1.0);
+        let size = rand(3, 7);
+        
+        sparkles.push({
+            x, y, vx, vy,
+            life: maxLife, maxLife: maxLife,
+            size: size, color: color || `hsl(${rand(0, 360)},90%,75%)`,
+            type: type
+        });
+    }
+}
+function updateSparkles(dt) {
+    for (let i = sparkles.length - 1; i >= 0; i--) {
+        const s = sparkles[i];
+        s.x += s.vx; s.y += s.vy; s.vy += 2.0 * dt;
+        s.life -= dt;
+        if (s.life <= 0) sparkles.splice(i, 1);
+    }
+}
+function drawSparkles() {
+    sparkles.forEach(s => {
+        const a = Math.max(0, s.life / s.maxLife);
+        ctx.globalAlpha = a;
+        ctx.fillStyle = s.color;
+        if (s.type === 'star') {
+            ctx.beginPath();
+            for (let i = 0; i < 8; i++) {
+                const angle = (i * Math.PI) / 4;
+                const cr = i % 2 === 0 ? s.size * a : s.size * 0.4 * a;
+                ctx.lineTo(s.x + Math.cos(angle) * cr, s.y + Math.sin(angle) * cr);
+            }
+            ctx.closePath(); ctx.fill();
+        } else {
+            ctx.beginPath(); ctx.arc(s.x, s.y, s.size * a, 0, Math.PI * 2); ctx.fill();
+        }
+    });
+    ctx.globalAlpha = 1;
+}
+
+// ===== CHARACTER DEFINITIONS =====
+const CHAR_DEFS = [
+    {id:1, gx:1.0, gy:0.8, sz:145, type:'blob-bunny', face:{eyes:[{t:'dot',x:-16,y:30,r:4.5},{t:'dot',x:16,y:30,r:4.5}], mouth:{t:'w-line',x:0,y:12}}},
+    {id:2, gx:3.2, gy:0.8, sz:145, type:'llama-giraffe', face:{eyes:[{t:'dot',x:22,y:-52,r:4.5}], mouth:{t:'flat',x:26,y:-38,w:3}}},
+    {id:3, gx:5.4, gy:0.8, sz:145, type:'eared-bowl', face:{eyes:[{t:'dot',x:-22,y:-5,r:4},{t:'dot',x:22,y:-5,r:4}], mouth:{t:'triangle',x:0,y:10}}, acc:{ears:true}},
+    {id:4, gx:7.6, gy:0.8, sz:145, type:'elephant-dome', face:{eyes:[{t:'dot',x:32,y:-6,r:4.5}], mouth:{t:'crescent-ear',x:6,y:-20}}},
+    {id:5, gx:2.1, gy:1.8, sz:145, type:'bear-head', face:{eyes:[{t:'dot',x:-22,y:-2,r:4},{t:'dot',x:22,y:-2,r:4}], mouth:{t:'snout',x:0,y:18}}, acc:{bearEars:true}},
+    {id:6, gx:4.3, gy:1.8, sz:145, type:'ghost-octopus', face:{eyes:[{t:'dot',x:-12,y:-22,r:3.5},{t:'dot',x:12,y:-22,r:3.5}], mouth:{t:'happy',x:0,y:-10,r:5}}},
+    {id:7, gx:6.5, gy:1.8, sz:145, type:'crab-monster', face:{eyes:[{t:'dot',x:-12,y:-12,r:3.5},{t:'dot',x:12,y:-12,r:3.5}], mouth:{t:'happy',x:0,y:-2,r:5}}, acc:{antennas:true}},
+    {id:8, gx:8.7, gy:1.8, sz:145, type:'blob-ghost', face:{eyes:[{t:'dot',x:-12,y:-12,r:3.5},{t:'dot',x:12,y:-12,r:3.5}], mouth:{t:'happy',x:0,y:-2,r:5}}},
+    {id:9, gx:1.0, gy:2.8, sz:145, type:'jellyfish', face:{eyes:[{t:'dot',x:-12,y:-28,r:4.5},{t:'dot',x:12,y:-28,r:4.5}], mouth:{t:'happy',x:0,y:-18,r:4.5}}, acc:{tentacles:true}},
+    {id:10,gx:3.2, gy:2.8, sz:145, type:'blob-bunny', face:{eyes:[{t:'dot',x:-16,y:30,r:4.5},{t:'dot',x:16,y:30,r:4.5}], mouth:{t:'w-line',x:0,y:12}}},
+    {id:11,gx:5.4, gy:2.8, sz:145, type:'llama-giraffe', face:{eyes:[{t:'dot',x:22,y:-52,r:4.5}], mouth:{t:'flat',x:26,y:-38,w:3}}},
+    {id:12,gx:7.6, gy:2.8, sz:145, type:'eared-bowl', face:{eyes:[{t:'dot',x:-22,y:-5,r:4},{t:'dot',x:22,y:-5,r:4}], mouth:{t:'triangle',x:0,y:10}}, acc:{ears:true}},
+    {id:13,gx:2.1, gy:3.8, sz:145, type:'elephant-dome', face:{eyes:[{t:'dot',x:32,y:-6,r:4.5}], mouth:{t:'crescent-ear',x:6,y:-20}}},
+    {id:14,gx:4.3, gy:3.8, sz:145, type:'bear-head', face:{eyes:[{t:'dot',x:-22,y:-2,r:4},{t:'dot',x:22,y:-2,r:4}], mouth:{t:'snout',x:0,y:18}}, acc:{bearEars:true}},
+    {id:15,gx:6.5, gy:3.8, sz:145, type:'ghost-octopus', face:{eyes:[{t:'dot',x:-12,y:-22,r:3.5},{t:'dot',x:12,y:-22,r:3.5}], mouth:{t:'happy',x:0,y:-10,r:5}}},
+    {id:16,gx:8.7, gy:3.8, sz:145, type:'crab-monster', face:{eyes:[{t:'dot',x:-12,y:-12,r:3.5},{t:'dot',x:12,y:-12,r:3.5}], mouth:{t:'happy',x:0,y:-2,r:5}}, acc:{antennas:true}},
+    {id:17,gx:1.0, gy:4.8, sz:145, type:'blob-ghost', face:{eyes:[{t:'dot',x:-12,y:-12,r:3.5},{t:'dot',x:12,y:-12,r:3.5}], mouth:{t:'happy',x:0,y:-2,r:5}}},
+    {id:18,gx:3.2, gy:4.8, sz:145, type:'jellyfish', face:{eyes:[{t:'dot',x:-12,y:-28,r:4.5},{t:'dot',x:12,y:-28,r:4.5}], mouth:{t:'happy',x:0,y:-18,r:4.5}}, acc:{tentacles:true}},
+    {id:19,gx:5.4, gy:4.8, sz:145, type:'bear-head', face:{eyes:[{t:'dot',x:-22,y:-2,r:4},{t:'dot',x:22,y:-2,r:4}], mouth:{t:'snout',x:0,y:18}}, acc:{bearEars:true}},
+    {id:20,gx:7.6, gy:4.8, sz:145, type:'ghost-octopus', face:{eyes:[{t:'dot',x:-12,y:-22,r:3.5},{t:'dot',x:12,y:-22,r:3.5}], mouth:{t:'happy',x:0,y:-10,r:5}}}
+];
+
+// ===== CHARACTER CLASS =====
+class Character {
+    constructor(def) {
+        this.id = def.id;
+        this.gx = def.gx; this.gy = def.gy;
+        this.baseSize = def.sz;
+        this.size = def.sz;
+        this.type = def.type;
+        this.color = getPaletteColor();
+        this.faceDef = JSON.parse(JSON.stringify(def.face || {}));
+        this.accDef = def.acc || {};
+        
+        this.x = 0; this.y = 0;
+        this.vx = 0; this.vy = 0;
+        this.rotation = 0; this.vr = 0;
+        this.scaleX = 1; this.scaleY = 1;
+        this.targetScaleX = 1; this.targetScaleY = 1;
+        
+        this.dragging = false;
+        this.dragOffX = 0; this.dragOffY = 0;
+        this.emotion = 'idle';
+        this.emotionTimer = 0;
+        this.blinkTimer = rand(2, 5);
+        this.blinking = false;
+        this.blinkDur = 0.15;
+        this.blinkElapsed = 0;
+        
+        // Changed parameters for a slow, lava-lamp aesthetic
+        this.floatPhase = rand(0, Math.PI * 2);
+        this.floatAmpX = rand(0.5, 1.2);
+        this.floatAmpY = rand(0.8, 1.8);
+        this.floatSpeed = rand(0.1, 0.25); // Much slower
+        this.idleRotationSpeed = rand(-0.15, 0.15); // Slow base rotation
+        
+        this.squishVX = 0; this.squishVY = 0;
+        this.zIndex = def.id;
+        this.opacity = 1.0;
+        this.reacting = false;
+        this.reactTimer = 0;
+    }
+
+    init(W, H) {
+        const gridW = 10, gridH = 5.6;
+        const contentAR = gridW / gridH;
+        const screenAR = W / H;
+        let cw, ch, offX = 0, offY = 0;
+
+        if (screenAR > contentAR) {
+            const cell = H / gridH; cw = cell; ch = cell;
+            offX = (W - gridW * cell) / 2;
+        } else {
+            cw = W / gridW; ch = H / gridH;
+        }
+
+        this.x = this.gx * cw + offX;
+        this.y = this.gy * ch + offY;
+        const effectiveCell = Math.min(cw, ch);
+        this.size = this.baseSize * Math.max(effectiveCell / 100, 0.9);
+    }
+
+    getRadius() { return this.size / 2; }
+
+    containsPoint(px, py) {
+        const r = this.size * 0.6;
+        const dx = px - this.x, dy = py - this.y;
+        return dx * dx + dy * dy < r * r;
+    }
+
+    update(dt, pointers, allChars) {
+        const springK = 14;
+        const springDamp = 0.55;
+
+        const dsx = this.targetScaleX - this.scaleX;
+        const dsy = this.targetScaleY - this.scaleY;
+        this.squishVX += dsx * springK * dt;
+        this.squishVY += dsy * springK * dt;
+        this.squishVX *= (1 - springDamp * dt * 10);
+        this.squishVY *= (1 - springDamp * dt * 10);
+        this.scaleX += this.squishVX * dt;
+        this.scaleY += this.squishVY * dt;
+
+        if (this.emotion !== 'idle') {
+            this.emotionTimer -= dt;
+            if (this.emotionTimer <= 0) this.emotion = 'idle';
+        }
+        if (this.reacting) {
+            this.reactTimer -= dt;
+            if (this.reactTimer <= 0) this.reacting = false;
+        }
+
+        if (this.blinking) {
+            this.blinkElapsed += dt;
+            if (this.blinkElapsed >= this.blinkDur) { this.blinking = false; this.blinkTimer = rand(2, 6); }
+        } else {
+            this.blinkTimer -= dt;
+            if (this.blinkTimer <= 0) { this.blinking = true; this.blinkElapsed = 0; }
+        }
+
+        if (!this.dragging) {
+            this.vx *= 0.95;
+            this.vy *= 0.95;
+            this.vr *= 0.92;
+
+            this.x += this.vx;
+            this.y += this.vy;
+            this.rotation += this.vr;
+
+            const speed = Math.abs(this.vx) + Math.abs(this.vy);
+            
+            // Idle Floating behavior
+            if (speed < 0.4) {
+                const t = performance.now() / 1000;
+                
+                // Slow ambient float
+                this.x += Math.sin(t * this.floatSpeed + this.floatPhase) * this.floatAmpX * dt * 10;
+                this.y += Math.cos(t * this.floatSpeed * 0.8 + this.floatPhase) * this.floatAmpY * dt * 10;
+                
+                // Slow continuous rotation
+                this.rotation += this.idleRotationSpeed * dt;
+
+                // Lava-lamp style stretching (thin out and elongate)
+                this.targetScaleX = 0.88 + Math.sin(t * this.floatSpeed * 1.5) * 0.05;
+                this.targetScaleY = 1.15 + Math.cos(t * this.floatSpeed * 1.2) * 0.08;
+                
+                // Slow downward drip gravity
+                this.vy += 0.5 * dt;
+
+            } else {
+                // Return to normal shape if moved fast
+                this.targetScaleX += (1 - this.targetScaleX) * 4 * dt;
+                this.targetScaleY += (1 - this.targetScaleY) * 4 * dt;
+            }
+
+            const r = this.getRadius();
+            const wallBounce = 0.6;
+            if (this.x - r < 0) { this.x = r; this.vx = Math.abs(this.vx) * wallBounce; this.targetScaleX = 0.82; this.targetScaleY = 1.15; if (Math.abs(this.vx) > 1.5) SFX.wallHit(); }
+            if (this.x + r > W) { this.x = W - r; this.vx = -Math.abs(this.vx) * wallBounce; this.targetScaleX = 0.82; this.targetScaleY = 1.15; if (Math.abs(this.vx) > 1.5) SFX.wallHit(); }
+            if (this.y - r < 0) { this.y = r; this.vy = Math.abs(this.vy) * wallBounce; this.targetScaleY = 0.82; this.targetScaleX = 1.15; if (Math.abs(this.vy) > 1.5) SFX.wallHit(); }
+            if (this.y + r > H) { this.y = H - r; this.vy = -Math.abs(this.vy) * wallBounce; this.targetScaleY = 0.82; this.targetScaleX = 1.15; if (Math.abs(this.vy) > 1.5) SFX.wallHit(); }
+        }
+
+        for (const other of allChars) {
+            if (other.id === this.id) continue;
+            const dx = this.x - other.x, dy = this.y - other.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const minDist = (this.getRadius() + other.getRadius()) * 0.88;
+            if (dist < minDist && dist > 0.1) {
+                const overlap = minDist - dist;
+                const nx = dx / dist, ny = dy / dist;
+                const push = overlap * 0.25;
+                if (!this.dragging) { this.x += nx * push; this.y += ny * push; }
+                if (!other.dragging) { other.x -= nx * push; other.y -= ny * push; }
+                if (Math.abs(this.vx) + Math.abs(this.vy) > 2.5) {
+                    this.targetScaleX = 0.88; this.targetScaleY = 1.12;
+                    other.targetScaleX = 0.88; other.targetScaleY = 1.12;
+                    SFX.bump();
+                }
+            }
+        }
+    }
+
+    draw(ctx, pointers) {
+        const r = this.size / 2;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.rotation);
+        ctx.scale(this.scaleX, this.scaleY);
+
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+
+        this.drawAccessoriesBack(ctx, r);
+        ctx.fillStyle = this.color;
+        this.drawShape(ctx, r);
+        this.drawAccessoriesFront(ctx, r);
+        this.drawFace(ctx, r, pointers);
+
+        ctx.restore();
+    }
+
+    drawShape(ctx, r) {
+        ctx.beginPath();
+        switch (this.type) {
+            case 'blob-bunny':
+                ctx.moveTo(-r*0.8, r*0.6);
+                ctx.lineTo(-r*0.8, -r*0.2);
+                ctx.arc(-r*0.45, -r*0.2, r*0.35, Math.PI, 0);
+                ctx.lineTo(-r*0.1, r*0.2);
+                ctx.lineTo(r*0.1, r*0.2);
+                ctx.lineTo(r*0.1, 0);
+                ctx.arc(r*0.45, 0, r*0.35, Math.PI, 0);
+                ctx.lineTo(r*0.8, r*0.6);
+                ctx.arc(0, r*0.6, r*0.8, 0, Math.PI);
+                ctx.fill();
+                break;
+            case 'llama-giraffe':
+                ctx.moveTo(-r*0.6, r*0.8);
+                ctx.lineTo(-r*0.6, -r*0.1);
+                ctx.lineTo(r*0.1, -r*0.1);
+                ctx.lineTo(r*0.1, -r*0.8);
+                ctx.arc(r*0.4, -r*0.8, r*0.3, Math.PI, 0);
+                ctx.lineTo(r*0.7, -r*0.3);
+                ctx.arc(r*0.5, -r*0.3, r*0.2, 0, Math.PI/2);
+                ctx.lineTo(r*0.3, -r*0.1);
+                ctx.lineTo(r*0.3, r*0.3);
+                ctx.lineTo(r*0.5, r*0.3);
+                ctx.lineTo(r*0.5, r*0.8);
+                ctx.arc(r*0.3, r*0.8, r*0.2, 0, Math.PI);
+                ctx.lineTo(r*0.1, r*0.8);
+                ctx.lineTo(r*0.1, r*0.5);
+                ctx.lineTo(-r*0.2, r*0.5);
+                ctx.lineTo(-r*0.2, r*0.8);
+                ctx.arc(-r*0.4, r*0.8, r*0.2, 0, Math.PI);
+                ctx.closePath(); ctx.fill();
+                break;
+            case 'eared-bowl':
+                ctx.arc(0, -r*0.1, r*0.8, 0, Math.PI, false);
+                ctx.lineTo(-r*0.8, -r*0.1);
+                ctx.closePath(); ctx.fill();
+                break;
+            case 'elephant-dome':
+                ctx.arc(0, r*0.4, r*0.75, Math.PI, -Math.PI*0.1);
+                ctx.quadraticCurveTo(r*1.1, r*0.4, r*1.0, r*0.65);
+                ctx.arc(r*0.9, r*0.65, r*0.1, 0, Math.PI, false);
+                ctx.quadraticCurveTo(r*0.8, r*0.5, r*0.75, r*0.7);
+                for(let i=0; i<4; i++) {
+                    let w = (r*1.5) / 4;
+                    let bx = r*0.75 - w*i;
+                    ctx.arc(bx - w/2, r*0.75, w/2, 0, Math.PI, false);
+                }
+                ctx.closePath(); ctx.fill();
+                break;
+            case 'bear-head':
+                ctx.arc(0, 0, r*0.75, 0, Math.PI*2); 
+                ctx.fill();
+                break;
+            case 'ghost-octopus':
+                ctx.moveTo(-r*0.8, 0);
+                ctx.arc(0, 0, r*0.8, Math.PI, 0);
+                ctx.quadraticCurveTo(r*0.8, r*0.6, r*0.6, r*0.8);
+                ctx.arc(r*0.5, r*0.8, r*0.1, 0, Math.PI);
+                ctx.quadraticCurveTo(r*0.4, r*0.4, r*0.3, r*0.5);
+                ctx.quadraticCurveTo(r*0.2, r*0.6, r*0.2, r*0.9);
+                ctx.arc(r*0.1, r*0.9, r*0.1, 0, Math.PI);
+                ctx.quadraticCurveTo(0, r*0.5, -r*0.1, r*0.5);
+                ctx.quadraticCurveTo(-r*0.2, r*0.5, -r*0.2, r*0.8);
+                ctx.arc(-r*0.3, r*0.8, r*0.1, 0, Math.PI);
+                ctx.quadraticCurveTo(-r*0.4, r*0.5, -r*0.5, r*0.5);
+                ctx.quadraticCurveTo(-r*0.6, r*0.5, -r*0.6, r*0.7);
+                ctx.arc(-r*0.7, r*0.7, r*0.1, 0, Math.PI);
+                ctx.quadraticCurveTo(-r*0.8, r*0.4, -r*0.8, 0);
+                ctx.closePath(); ctx.fill();
+                break;
+            case 'crab-monster':
+                ctx.arc(0, r*0.2, r*0.6, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath();
+                ctx.lineCap = 'round'; ctx.lineWidth = r*0.25; ctx.strokeStyle = this.color;
+                ctx.moveTo(-r*0.5, r*0.2); ctx.lineTo(-r*0.85, r*0.5); ctx.stroke();
+                ctx.moveTo(-r*0.4, r*0.5); ctx.lineTo(-r*0.6, r*0.8); ctx.stroke();
+                ctx.moveTo(r*0.5, r*0.2); ctx.lineTo(r*0.85, r*0.5); ctx.stroke();
+                ctx.moveTo(r*0.4, r*0.5); ctx.lineTo(r*0.6, r*0.8); ctx.stroke();
+                break;
+            case 'blob-ghost':
+                ctx.moveTo(0, -r*0.7);
+                ctx.quadraticCurveTo(r*0.8, -r*0.3, r*0.85, r*0.4);
+                ctx.quadraticCurveTo(r*0.85, r*0.7, r*0.5, r*0.7);
+                ctx.quadraticCurveTo(r*0.3, r*0.7, 0, r*0.4);
+                ctx.quadraticCurveTo(-r*0.3, r*0.7, -r*0.5, r*0.7);
+                ctx.quadraticCurveTo(-r*0.85, r*0.7, -r*0.85, r*0.4);
+                ctx.quadraticCurveTo(-r*0.8, -r*0.3, 0, -r*0.7);
+                ctx.fill();
+                break;
+            case 'jellyfish':
+                ctx.arc(0, -r*0.15, r*0.75, Math.PI, 0, false);
+                ctx.lineTo(r*0.75, -r*0.15);
+                ctx.lineTo(-r*0.75, -r*0.15);
+                ctx.closePath(); ctx.fill();
+                break;
+        }
+    }
+
+    drawAccessoriesBack(ctx, r) {
+        if (this.accDef.bearEars) {
+            ctx.fillStyle = this.color;
+            ctx.beginPath(); ctx.arc(-r*0.6, -r*0.5, r*0.22, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(r*0.6, -r*0.5, r*0.22, 0, Math.PI*2); ctx.fill();
+        }
+        if (this.accDef.ears) {
+            ctx.fillStyle = '#f569b3';
+            ctx.beginPath(); ctx.arc(-r*0.7, -r*0.1, r*0.2, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(r*0.7, -r*0.1, r*0.2, 0, Math.PI*2); ctx.fill();
+        }
+        if (this.accDef.antennas) {
+            ctx.strokeStyle = '#000'; ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.moveTo(-r*0.2, -r*0.4); ctx.lineTo(-r*0.25, -r*0.8); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(r*0.2, -r*0.4); ctx.lineTo(r*0.25, -r*0.8); ctx.stroke();
+        }
+        if (this.accDef.tentacles) {
+            ctx.strokeStyle = '#2d4bba';
+            ctx.lineWidth = r*0.15; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(-r*0.4, -r*0.15); ctx.quadraticCurveTo(-r*0.6, r*0.3, -r*0.3, r*0.8); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, -r*0.15); ctx.quadraticCurveTo(r*0.2, r*0.3, -r*0.1, r*0.8); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(r*0.4, -r*0.15); ctx.quadraticCurveTo(r*0.6, r*0.3, r*0.3, r*0.8); ctx.stroke();
+        }
+    }
+
+    drawAccessoriesFront(ctx, r) {
+        if (this.accDef.antennas) {
+            ctx.fillStyle = '#fcfaf2';
+            ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.moveTo(-r*0.25, -r*0.8); ctx.lineTo(-r*0.4, -r*0.9); ctx.lineTo(-r*0.1, -r*0.9); ctx.closePath(); ctx.fill(); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(r*0.25, -r*0.8); ctx.lineTo(r*0.1, -r*0.9); ctx.lineTo(r*0.4, -r*0.9); ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+    }
+
+    drawFace(ctx, r, pointers) {
+        const f = this.faceDef;
+        ctx.save();
+        ctx.fillStyle = '#000'; ctx.strokeStyle = '#000'; ctx.lineWidth = 4.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+        let nearestPx = 0, nearestPy = 0, nearestDist = Infinity;
+        for (const p of pointers) {
+            const lx = (p.x - this.x) / this.scaleX;
+            const ly = (p.y - this.y) / this.scaleY;
+            const d = lx * lx + ly * ly;
+            if (d < nearestDist) { nearestDist = d; nearestPx = lx; nearestPy = ly; }
+        }
+
+        if (f.eyes) {
+            f.eyes.forEach(eye => {
+                const ex = eye.x, ey = eye.y, eR = eye.r || 4.5;
+                
+                if (this.blinking && eye.t !== 'sleeping') {
+                    ctx.beginPath(); ctx.moveTo(ex - eR, ey); ctx.lineTo(ex + eR, ey); ctx.stroke();
+                    return;
+                }
+
+                if (this.emotion === 'surprised' || this.reacting) {
+                    ctx.fillStyle = '#fff';
+                    ctx.beginPath(); ctx.arc(ex, ey, eR * 1.8, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+                    ctx.fillStyle = '#000';
+                    ctx.beginPath(); ctx.arc(ex, ey, eR * 0.8, 0, Math.PI*2); ctx.fill();
+                } else if (this.emotion === 'laughing') {
+                    ctx.beginPath(); ctx.moveTo(ex - 7, ey + 3); ctx.lineTo(ex, ey - 4); ctx.lineTo(ex + 7, ey + 3); ctx.stroke();
+                } else {
+                    let dx = nearestPx - ex, dy = nearestPy - ey;
+                    const dm = Math.sqrt(dx * dx + dy * dy);
+                    const lookFactor = dm > 0 ? Math.min(dm * 0.1, 4.0) : 0;
+                    const ox = dm > 0 ? (dx / dm) * lookFactor : 0;
+                    const oy = dm > 0 ? (dy / dm) * lookFactor : 0;
+
+                    ctx.beginPath();
+                    ctx.arc(ex + ox, ey + oy, eR, 0, Math.PI*2);
+                    ctx.fill();
+                }
+            });
+        }
+
+        if (this.emotion === 'happy' || this.emotion === 'laughing') {
+            ctx.fillStyle = 'rgba(255, 80, 120, 0.45)';
+            ctx.beginPath(); ctx.arc(-r*0.4, r*0.2, r*0.14, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(r*0.4, r*0.2, r*0.14, 0, Math.PI*2); ctx.fill();
+        }
+
+        if (f.mouth) {
+            let mt = f.mouth.t;
+            let mx = f.mouth.x, my = f.mouth.y;
+
+            if (this.emotion === 'surprised' || this.reacting) {
+                ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(mx, my + 6, 8, 0, Math.PI*2); ctx.fill();
+            } else if (this.emotion === 'laughing') {
+                ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(mx, my + 4, 10, 0, Math.PI); ctx.fill();
+            } else if (this.emotion === 'happy') {
+                ctx.beginPath(); ctx.arc(mx, my, 10, 0.1, Math.PI - 0.1, false); ctx.stroke();
+            } else {
+                switch (mt) {
+                    case 'w-line':
+                        ctx.beginPath(); ctx.arc(mx - 8, my, 8, 0, Math.PI, false); ctx.stroke();
+                        ctx.beginPath(); ctx.arc(mx + 8, my, 8, 0, Math.PI, false); ctx.stroke();
+                        break;
+                    case 'flat':
+                        ctx.beginPath(); ctx.moveTo(mx - f.mouth.w, my); ctx.lineTo(mx + f.mouth.w, my); ctx.stroke();
+                        break;
+                    case 'triangle':
+                        ctx.fillStyle = '#000'; ctx.beginPath();
+                        ctx.moveTo(mx, my + 4); ctx.lineTo(mx - 6, my - 4); ctx.lineTo(mx + 6, my - 4); ctx.closePath(); ctx.fill();
+                        break;
+                    case 'snout':
+                        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(mx, my, 16, 0, Math.PI*2); ctx.fill();
+                        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(mx, my - 2, 5, 0, Math.PI*2); ctx.fill();
+                        ctx.beginPath(); ctx.arc(mx, my + 4, 6, 0, Math.PI, false); ctx.stroke();
+                        break;
+                    case 'happy':
+                        ctx.beginPath(); ctx.arc(mx, my, f.mouth.r, 0, Math.PI, false); ctx.stroke();
+                        break;
+                    case 'crescent-ear':
+                        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(mx, my, 8, 0, Math.PI*2); ctx.fill();
+                        ctx.fillStyle = this.color; ctx.beginPath(); ctx.arc(mx + 3, my, 6, 0, Math.PI*2); ctx.fill();
+                        break;
+                    case 'none':
+                        break;
+                }
+            }
+        }
+        ctx.restore();
+    }
+}
+
+// ===== CREATE AND INIT CHARACTERS =====
+let chars = CHAR_DEFS.map(d => new Character(d));
+function initPositions() { chars.forEach(c => c.init(W, H)); }
+initPositions();
+
+window.addEventListener('resize', () => {
+    const oldW = W, oldH = H;
+    resize();
+    if (oldW > 0 && oldH > 0) {
+        const sx = W / oldW, sy = H / oldH;
+        chars.forEach(c => {
+            c.x *= sx; c.y *= sy;
+            const gridW = 10, gridH = 5.6;
+            const screenAR = W / H, contentAR = gridW / gridH;
+            let cw, ch;
+            if (screenAR > contentAR) { const cell = H / gridH; cw = cell; ch = cell; }
+            else { cw = W / gridW; ch = H / gridH; }
+            const effectiveCell = Math.min(cw, ch);
+            c.size = c.baseSize * Math.max(effectiveCell / 100, 0.9);
+        });
+    }
+});
+
+// ===== INTERACTION CONTROLS =====
+let pointers = new Map();
+let globalPointerList = [];
+
+function getPointerPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function findCharAt(x, y) {
+    const sorted = [...chars].sort((a, b) => b.zIndex - a.zIndex);
+    for (const c of sorted) { if (c.containsPoint(x, y)) return c; }
+    return null;
+}
+
+function onPointerDown(id, x, y) {
+    SFX.unlock();
+    const ch = findCharAt(x, y);
+    pointers.set(id, { x, y, prevX: x, prevY: y, char: ch });
+    if (ch) {
+        ch.dragging = true;
+        ch.dragOffX = ch.x - x; ch.dragOffY = ch.y - y;
+        ch.vx = 0; ch.vy = 0; ch.vr = 0;
+        ch.emotion = 'surprised'; ch.emotionTimer = 0.8;
+        ch.targetScaleX = 1.15; ch.targetScaleY = 0.85;
+        const maxZ = Math.max(...chars.map(c => c.zIndex));
+        ch.zIndex = maxZ + 1;
+        spawnSparkles(x, y, 9, `hsl(${rand(0,360)},100%,75%)`);
+        SFX.pickUp();
+    }
+}
+
+function onPointerMove(id, x, y) {
+    const p = pointers.get(id);
+    if (!p) return;
+    p.prevX = p.x; p.prevY = p.y; p.x = x; p.y = y;
+
+    if (p.char && p.char.dragging) {
+        const ch = p.char;
+        const dx = x - p.prevX, dy = y - p.prevY;
+        const speed = Math.sqrt(dx * dx + dy * dy);
+        ch.x = x + ch.dragOffX; ch.y = y + ch.dragOffY;
+        ch.vx = dx * 0.55; ch.vy = dy * 0.55;
+        ch.vr = dx * 0.004;
+
+        ch.targetScaleX = 1 + Math.min(Math.abs(dx) * 0.01, 0.3);
+        ch.targetScaleY = 1 + Math.min(Math.abs(dy) * 0.01, 0.3);
+
+        if (speed > 7.5) {
+            ch.emotion = 'laughing'; ch.emotionTimer = 0.6;
+            if (Math.random() < 0.35) spawnSparkles(ch.x, ch.y, 2, `hsl(${rand(0, 360)},95%,70%)`);
+            if (Math.random() < 0.15) SFX.giggle();
+        } else if (speed > 2.0) {
+            ch.emotion = 'happy'; ch.emotionTimer = 0.5;
+        }
+        if (speed > 1.2) SFX.dragWobble(speed);
+
+        chars.forEach(other => {
+            if (other.id === ch.id) return;
+            const odx = ch.x - other.x, ody = ch.y - other.y;
+            const od = Math.sqrt(odx * odx + ody * ody);
+            if (od < (ch.getRadius() + other.getRadius()) * 1.45) {
+                if (!other.reacting && speed > 4.0) {
+                    other.reacting = true; other.reactTimer = 0.55;
+                    SFX.surprised();
+                }
+            }
+        });
+    }
+}
+
+function onPointerUp(id) {
+    const p = pointers.get(id);
+    if (p && p.char) {
+        const ch = p.char;
+        ch.dragging = false;
+        ch.emotion = 'happy'; ch.emotionTimer = 1.4;
+        ch.targetScaleX = 0.85; ch.targetScaleY = 1.15;
+        ch.vx *= 1.4; ch.vy *= 1.4;
+        spawnSparkles(ch.x, ch.y, 14, `hsl(${rand(0, 360)},100%,75%)`);
+        SFX.drop();
+        SFX.sparkle();
+    }
+    pointers.delete(id);
+}
+
+// Event hooks
+canvas.addEventListener('touchstart', e => {
+    e.preventDefault(); for (const t of e.changedTouches) { const pos = getPointerPos(t); onPointerDown(t.identifier, pos.x, pos.y); }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+    e.preventDefault(); for (const t of e.changedTouches) { const pos = getPointerPos(t); onPointerMove(t.identifier, pos.x, pos.y); }
+}, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); for (const t of e.changedTouches) onPointerUp(t.identifier); });
+canvas.addEventListener('touchcancel', e => { for (const t of e.changedTouches) onPointerUp(t.identifier); });
+
+let mouseDown = false;
+canvas.addEventListener('mousedown', e => { mouseDown = true; const pos = getPointerPos(e); onPointerDown('mouse', pos.x, pos.y); });
+canvas.addEventListener('mousemove', e => { const pos = getPointerPos(e); if (mouseDown) onPointerMove('mouse', pos.x, pos.y); globalPointerList = [pos]; });
+canvas.addEventListener('mouseup', () => { mouseDown = false; onPointerUp('mouse'); });
+canvas.addEventListener('mouseleave', () => { if (mouseDown) { mouseDown = false; onPointerUp('mouse'); } });
+
+// ===== MEDIAPIPE HANDS CAPABILITIES =====
+let handTrackingActive = false;
+let handPoints = [];
+let videoEl = document.getElementById('webcam');
+const handBtn = document.getElementById('handBtn');
+const webcamWrap = document.getElementById('webcamWrap');
+
+handBtn.addEventListener('click', async () => {
+    if (handTrackingActive) {
+        handTrackingActive = false; handBtn.classList.remove('active'); webcamWrap.style.display = 'none'; handPoints = [];
+        if (videoEl.srcObject) { videoEl.srcObject.getTracks().forEach(t => t.stop()); videoEl.srcObject = null; }
+        return;
+    }
+    handBtn.textContent = '⏳';
+    try {
+        if (!window.Hands) {
+            await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js');
+            await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js');
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 320, height: 240 } });
+        videoEl.srcObject = stream; webcamWrap.style.display = 'block';
+
+        const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}` });
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        hands.onResults(results => {
+            handPoints = [];
+            if (results.multiHandLandmarks) {
+                const tips = [4, 8, 12, 16, 20];
+                results.multiHandLandmarks.forEach(lm => {
+                    tips.forEach(ti => { const pt = lm[ti]; handPoints.push({ x: (1 - pt.x) * W, y: pt.y * H }); });
+                });
+            }
+            handPoints.forEach(hp => {
+                chars.forEach(ch => {
+                    if (ch.dragging) return;
+                    const dx = hp.x - ch.x, dy = hp.y - ch.y, dist = Math.sqrt(dx * dx + dy * dy);
+                    const touchR = ch.getRadius() * 1.25;
+                    if (dist < touchR) {
+                        ch.emotion = 'happy'; ch.emotionTimer = 0.4;
+                        ch.targetScaleX = 1.08; ch.targetScaleY = 0.92;
+                        if (dist > 0.1) { ch.vx += (-dx / dist) * 1.8; ch.vy += (-dy / dist) * 1.8; }
+                        if (Math.random() < 0.12) { spawnSparkles(hp.x, hp.y, 2); SFX.sparkle(); }
+                        if (Math.random() < 0.08) SFX.giggle();
+                    }
+                });
+            });
+        });
+
+        const camera = new Camera(videoEl, { onFrame: async () => { await hands.send({ image: videoEl }); }, width: 320, height: 240 });
+        camera.start();
+        handTrackingActive = true; handBtn.classList.add('active'); handBtn.textContent = '✋';
+    } catch (err) { console.error(err); handBtn.textContent = '✋'; }
+});
+
+function loadScript(src) {
+    return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+}
+
+// ===== MUTE CONTROLLER =====
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+    SFX.unlock(); const muted = SFX.toggleMute();
+    muteBtn.textContent = muted ? '🔇' : '🔊'; muteBtn.classList.toggle('muted', muted);
+});
+
+// ===== CORE TICK PIPELINE =====
+let lastTime = performance.now();
+function frame(now) {
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+
+    const allPointers = [...globalPointerList];
+    pointers.forEach(p => allPointers.push({ x: p.x, y: p.y }));
+    handPoints.forEach(hp => allPointers.push(hp));
+    if (allPointers.length === 0) allPointers.push({ x: W / 2, y: -500 });
+
+    chars.forEach(c => c.update(dt, allPointers, chars));
+    updateSparkles(dt);
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, W, H);
+
+    const sorted = [...chars].sort((a, b) => a.zIndex - b.zIndex);
+    sorted.forEach(c => c.draw(ctx, allPointers));
+
+    drawSparkles();
+
+    if (handTrackingActive && handPoints.length > 0) {
+        ctx.globalAlpha = 0.4; ctx.fillStyle = '#ff5078';
+        handPoints.forEach(hp => { ctx.beginPath(); ctx.arc(hp.x, hp.y, 7, 0, Math.PI*2); ctx.fill(); });
+        ctx.globalAlpha = 1.0;
+    }
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
