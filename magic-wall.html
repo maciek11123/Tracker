@@ -667,14 +667,15 @@ $('calib-exit').addEventListener('click',closeCalibration);
 // ═══════════════════════════════════════════════════
 //  BLUEY MIRROR (MoveNet multi-person)
 // ═══════════════════════════════════════════════════
-const BM='https://maciek11123.github.io/bluey-mirror/';
 const GIFS=[
-  {src:BM+"bingo_dance_1.gif"},
-  {src:BM+"bluey_1.gif"},
-  {src:BM+"bluey_bingo_dance_1.gif"},
-  {src:BM+"bluey_bingo_surprised.gif"},
-  {src:BM+"bluey_bong_happy.gif"},
-  {src:BM+"bluey_dancing_1.gif"},
+  {src:"bingo_waving.gif"},
+  {src:"bingo_shy.gif"},
+  {src:"bingo_surprised.gif"},
+  {src:"bluey_standing.gif"},
+  {src:"chilli_dancing.gif"},
+  {src:"chilli_bird.gif"},
+  {src:"jack_guitar.gif"},
+  {src:"bingo_guitar_rockstar.gif"},
 ];
 const BCFG={
   smoothing:0.5,trackThresh:0.25,ghostFrames:20,
@@ -744,7 +745,6 @@ function spawnCharacter(person,now){
   y=Math.max(0,Math.min(y,H-charH));
   charEl.style.left=x+'px';charEl.style.top=y+'px';
   charEl.style.height=charH+'px';charEl.style.width='auto';
-  charEl.style.display='';
   charEl.className='entering';
   setTimeout(()=>{
     if(!charActive)return;
@@ -752,7 +752,7 @@ function spawnCharacter(person,now){
     setTimeout(()=>{
       if(!charActive)return;
       charEl.className='exiting';
-      setTimeout(()=>{charEl.className='';charActive=false},450);
+      setTimeout(()=>{charEl.className='';charEl.style.display='none';charActive=false},450);
     },BCFG.charVisibleMs);
   },500);
 }
