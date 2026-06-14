@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Squishy Friends - Custom Image Set</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { 
+  width: 100%; height: 100%; overflow: hidden; 
+  background: #F8F5EE; /* Changed to match image background */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+canvas { display: block; width: 100%; height: 100%; }
+#videoContainer {
+  position: fixed; bottom: 12px; right: 12px;
+  width: 120px; height: 90px; border-radius: 10px;
+  overflow: hidden; z-index: 10; opacity: 0;
+  transition: opacity 0.4s;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+}
+#videoContainer.active { opacity: 1; }
+#webcamVideo { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+#toggleCam {
+  position: fixed; bottom: 12px; left: 12px;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: rgba(0,0,0,0.5); border: none; color: #fff;
+  font-size: 20px; z-index: 10; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(6px);
+}
+#toggleCam:active { background: rgba(0,0,0,0.7); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="toggleCam" aria-label="Toggle camera">🖐️</button>
+<div id="videoContainer">
+  <video id="webcamVideo" playsinline autoplay muted></video>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js"></script>
+
+<script>
+// ─── Canvas Setup ───
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ─── Utility ───
+function lerp(a, b, t) { return a + (b - a) * t; }
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function clamp(v, mn, mx) { return Math.max(mn, Math.min(mx, v)); }
+
+// ─── Sound Engine — Distinct Character Personalities ───
+let audioCtx = null;
+let soundUnlocked = false;
+let masterGainNode = null;
+
+function getAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGainNode = audioCtx.createGain();
+    masterGainNode.gain.value = 0.32;
+    masterGainNode.connect(audioCtx.destination);
+  }
+  return audioCtx;
+}
+
+function unlockAudio() {
+  if (soundUnlocked) return;
+  soundUnlocked = true;
+  const ac = getAudioCtx();
+  if (ac.state === 'suspended') ac.resume();
+}
+
+function osc(ac, type, freq, detuneVal = 0) {
+  const o = ac.createOscillator();
+  o.type = type;
+  o.frequency.value = freq;
+  o.detune.value = detuneVal;
+  return o;
+}
+
+function env(ac, gainVal, atk, dec, sus, rel, dest) {
+  const g = ac.createGain();
+  const t = ac.currentTime;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(gainVal, t + atk);
+  g.gain.exponentialRampToValueAtTime(gainVal * sus + 0.0001, t + atk + dec);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + atk + dec + rel);
+  g.connect(dest);
+  return { g, dur: atk + dec + rel };
+}
+
+const soundThrottle = new Map();
+function soundThrottled(key, fn, ms = 200) {
+  const now = performance.now();
+  if (!soundThrottle.has(key) || now - soundThrottle.get(key) > ms) {
+    soundThrottle.set(key, now);
+    fn();
+  }
+}
+
+// ─ 14 completely distinct sound personalities ─
+const CHAR_SOUNDS = [
+  // 0
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 130); const { g, dur } = env(ac, 0.22, 0.04, 0.1, 0.6, 1.8, masterGainNode); o.connect(g); o.start(t); o.stop(t + dur + 0.1); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 196); const { g, dur } = env(ac, 0.18, 0.02, 0.05, 0.5, 2.2, masterGainNode); o.connect(g); o.start(t); o.stop(t + dur + 0.1); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; [130, 196, 260].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.12); g.gain.linearRampToValueAtTime(0.12, t + i * 0.12 + 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.12 + 1.0); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.12); o.stop(t + i * 0.12 + 1.1); }); } },
+  // 1
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'triangle', 523); const { g, dur } = env(ac, 0.2, 0.005, 0.08, 0.1, 0.4, masterGainNode); o.connect(g); o.start(t); o.stop(t + dur + 0.05); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [523, 659, 784].forEach((f, i) => { const o = osc(ac, 'triangle', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.06); g.gain.linearRampToValueAtTime(0.12, t + i * 0.06 + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.06 + 0.5); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.06); o.stop(t + i * 0.06 + 0.55); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; [659, 784, 1047].forEach((f, i) => { const o = osc(ac, 'triangle', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.09); g.gain.linearRampToValueAtTime(0.11, t + i * 0.09 + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.09 + 0.55); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.09); o.stop(t + i * 0.09 + 0.6); }); } },
+  // 2
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 880); const { g, dur } = env(ac, 0.18, 0.004, 0.04, 0.05, 0.25, masterGainNode); o.frequency.setValueAtTime(1100, t); o.frequency.exponentialRampToValueAtTime(880, t + 0.08); o.connect(g); o.start(t); o.stop(t + 0.4); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [1047, 1319, 1568].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.055); g.gain.linearRampToValueAtTime(0.13, t + i * 0.055 + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.055 + 0.38); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.055); o.stop(t + i * 0.055 + 0.42); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; for (let i = 0; i < 4; i++) { const f = 880 * Math.pow(1.25, i); const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.07); g.gain.linearRampToValueAtTime(0.12, t + i * 0.07 + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.07 + 0.3); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.07); o.stop(t + i * 0.07 + 0.35); } } },
+  // 3
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sawtooth', 98); const g = ac.createGain(); const filt = ac.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 400; g.gain.setValueAtTime(0.25, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7); o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t); o.stop(t + 0.75); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 196); const { g, dur } = env(ac, 0.2, 0.01, 0.1, 0.3, 0.6, masterGainNode); o.connect(g); o.start(t); o.stop(t + dur + 0.05); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; [98, 147, 196].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.1); g.gain.linearRampToValueAtTime(0.15, t + i * 0.1 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.1 + 0.5); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.1); o.stop(t + i * 0.1 + 0.55); }); } },
+  // 4
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; [2093, 2637, 3136].forEach((f, i) => { const o = osc(ac, 'sine', f, (Math.random() - 0.5) * 8); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.04); g.gain.linearRampToValueAtTime(0.1, t + i * 0.04 + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.04 + 0.9); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.04); o.stop(t + i * 0.04 + 1.0); }); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [1568, 2093, 2637, 3136].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.05); g.gain.linearRampToValueAtTime(0.09, t + i * 0.05 + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.05 + 1.1); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.05); o.stop(t + i * 0.05 + 1.2); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; for (let i = 0; i < 6; i++) { const f = 1568 * (1 + Math.random() * 0.5); const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.06); g.gain.linearRampToValueAtTime(0.07, t + i * 0.06 + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.06 + 0.6); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.06); o.stop(t + i * 0.06 + 0.65); } } },
+  // 5
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 440); const { g } = env(ac, 0.2, 0.005, 0.05, 0.1, 0.5, masterGainNode); o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(800, t + 0.15); o.frequency.exponentialRampToValueAtTime(350, t + 0.35); o.connect(g); o.start(t); o.stop(t + 0.7); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 440); const { g } = env(ac, 0.18, 0.005, 0.04, 0.08, 0.4, masterGainNode); o.frequency.setValueAtTime(600, t); o.frequency.exponentialRampToValueAtTime(1200, t + 0.1); o.frequency.exponentialRampToValueAtTime(440, t + 0.3); o.connect(g); o.start(t); o.stop(t + 0.55); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; for (let i = 0; i < 3; i++) { const o = osc(ac, 'sine', 300 + i * 150); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.1); g.gain.linearRampToValueAtTime(0.14, t + i * 0.1 + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.1 + 0.4); o.frequency.setValueAtTime(200 + i * 100, t + i * 0.1); o.frequency.exponentialRampToValueAtTime(600 + i * 200, t + i * 0.1 + 0.15); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.1); o.stop(t + i * 0.1 + 0.45); } } },
+  // 6
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sawtooth', 330); const { g } = env(ac, 0.14, 0.01, 0.05, 0.4, 0.3, masterGainNode); const filt = ac.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 1200; filt.Q.value = 3; o.connect(filt); filt.connect(g); o.start(t); o.stop(t + 0.6); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [330, 392, 494].forEach((f, i) => { const o = osc(ac, 'square', f); const filt = ac.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 900; filt.Q.value = 4; const g = ac.createGain(); g.gain.setValueAtTime(0.08, t + i * 0.07); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.07 + 0.35); o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t + i * 0.07); o.stop(t + i * 0.07 + 0.4); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sawtooth', 440); const filt = ac.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 1400; filt.Q.value = 5; const g = ac.createGain(); g.gain.setValueAtTime(0.1, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6); o.frequency.setValueAtTime(330, t); o.frequency.linearRampToValueAtTime(660, t + 0.3); o.frequency.linearRampToValueAtTime(330, t + 0.6); o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t); o.stop(t + 0.65); } },
+  // 7
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const noise = ac.createOscillator(); noise.type = 'sine'; noise.frequency.value = 698; const g = ac.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.16, t + 0.08); g.gain.exponentialRampToValueAtTime(0.08, t + 0.3); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.0); noise.connect(g); g.connect(masterGainNode); noise.start(t); noise.stop(t + 1.05); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [698, 880, 1047].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.08); g.gain.linearRampToValueAtTime(0.1, t + i * 0.08 + 0.06); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.08 + 0.8); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.08); o.stop(t + i * 0.08 + 0.9); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; for (let i = 0; i < 4; i++) { const o = osc(ac, 'sine', 698 * (1 + i * 0.15)); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.09); g.gain.linearRampToValueAtTime(0.1, t + i * 0.09 + 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.09 + 0.55); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.09); o.stop(t + i * 0.09 + 0.6); } } },
+  // 8
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; [329, 415, 494, 659].forEach((f, i) => { const o = osc(ac, 'sawtooth', f); const filt = ac.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 2000; filt.frequency.exponentialRampToValueAtTime(400, t + 0.3); const g = ac.createGain(); g.gain.setValueAtTime(0.1, t + i * 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.015 + 0.45); o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t + i * 0.015); o.stop(t + i * 0.015 + 0.5); }); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [494, 659, 831, 988].forEach((f, i) => { const o = osc(ac, 'sawtooth', f); const filt = ac.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 1800; const g = ac.createGain(); g.gain.setValueAtTime(0.09, t + i * 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.02 + 0.55); o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t + i * 0.02); o.stop(t + i * 0.02 + 0.6); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; for (let i = 0; i < 5; i++) { const f = [329, 415, 494, 587, 659][i]; const o = osc(ac, 'sawtooth', f); const filt = ac.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 1500; const g = ac.createGain(); g.gain.setValueAtTime(0.09, t + i * 0.045); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.045 + 0.4); o.connect(filt); filt.connect(g); g.connect(masterGainNode); o.start(t + i * 0.045); o.stop(t + i * 0.045 + 0.45); } } },
+  // 9
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const buf = ac.createBuffer(1, ac.sampleRate * 0.6, ac.sampleRate); const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; const src = ac.createBufferSource(); src.buffer = buf; const filt = ac.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 600; filt.Q.value = 0.5; const g = ac.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.15, t + 0.15); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6); src.connect(filt); filt.connect(g); g.connect(masterGainNode); src.start(t); src.stop(t + 0.65); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; const buf = ac.createBuffer(1, ac.sampleRate * 0.8, ac.sampleRate); const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; const src = ac.createBufferSource(); src.buffer = buf; const filt = ac.createBiquadFilter(); filt.type = 'highpass'; filt.frequency.value = 1200; const g = ac.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.1, t + 0.08); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8); src.connect(filt); filt.connect(g); g.connect(masterGainNode); src.start(t); src.stop(t + 0.85); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; [220, 277, 330, 370].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.1); g.gain.linearRampToValueAtTime(0.1, t + i * 0.1 + 0.06); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.1 + 0.7); o.detune.value = (Math.random() - 0.5) * 10; o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.1); o.stop(t + i * 0.1 + 0.75); }); } },
+  // 10
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; [1760, 2217, 2794].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0.12, t + i * 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.01 + 0.7); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.01); o.stop(t + i * 0.01 + 0.75); }); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [2093, 2637, 3322, 4186].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0.1, t + i * 0.025); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.025 + 0.8); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.025); o.stop(t + i * 0.025 + 0.85); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; for (let i = 0; i < 5; i++) { const f = 1760 + i * 350; const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0.09, t + i * 0.055); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.055 + 0.5); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.055); o.stop(t + i * 0.055 + 0.55); } } },
+  // 11
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 392); const { g } = env(ac, 0.19, 0.007, 0.06, 0.3, 0.9, masterGainNode); o.connect(g); o.start(t); o.stop(t + 1.5); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [392, 494, 587, 698].forEach((f, i) => { const o = osc(ac, 'sine', f); const { g } = env(ac, 0.1, 0.006, 0.05, 0.25, 0.8, masterGainNode); o.connect(g); o.start(t + i * 0.07); o.stop(t + i * 0.07 + 1.1); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; [392, 440, 494, 523, 587].forEach((f, i) => { const o = osc(ac, 'sine', f); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.08); g.gain.linearRampToValueAtTime(0.12, t + i * 0.08 + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.08 + 0.6); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.08); o.stop(t + i * 0.08 + 0.65); }); } },
+  // 12
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; [174, 220, 261].forEach((f, i) => { const o = osc(ac, 'sine', f, (Math.random()-0.5)*8); const g = ac.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.1, t + 0.25); g.gain.linearRampToValueAtTime(0.06, t + 0.8); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6); o.connect(g); g.connect(masterGainNode); o.start(t); o.stop(t + 1.65); }); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; [220, 277, 330, 392].forEach((f, i) => { const o = osc(ac, 'sine', f, (Math.random()-0.5)*6); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.06); g.gain.linearRampToValueAtTime(0.09, t + i * 0.06 + 0.2); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.06 + 1.4); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.06); o.stop(t + i * 0.06 + 1.5); }); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; [174, 220, 261, 330].forEach((f, i) => { const o = osc(ac, 'sine', f, (Math.random()-0.5)*10); const g = ac.createGain(); g.gain.setValueAtTime(0, t + i * 0.11); g.gain.linearRampToValueAtTime(0.1, t + i * 0.11 + 0.18); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.11 + 1.0); o.connect(g); g.connect(masterGainNode); o.start(t + i * 0.11); o.stop(t + i * 0.11 + 1.05); }); } },
+  // 13
+  { grab: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 330); const { g } = env(ac, 0.18, 0.05, 0.08, 0.5, 0.6, masterGainNode); o.frequency.setValueAtTime(260, t); o.frequency.linearRampToValueAtTime(520, t + 0.25); o.frequency.linearRampToValueAtTime(340, t + 0.5); o.frequency.linearRampToValueAtTime(440, t + 0.8); const lfo = osc(ac, 'sine', 5.5); const lfoG = ac.createGain(); lfoG.gain.value = 18; lfo.connect(lfoG); lfoG.connect(o.detune); o.connect(g); lfo.start(t); lfo.stop(t + 1.0); o.start(t); o.stop(t + 1.0); },
+    release: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 440); const { g } = env(ac, 0.16, 0.03, 0.07, 0.4, 0.7, masterGainNode); o.frequency.setValueAtTime(300, t); o.frequency.exponentialRampToValueAtTime(700, t + 0.3); o.frequency.exponentialRampToValueAtTime(440, t + 0.7); const lfo = osc(ac, 'sine', 7); const lfoG = ac.createGain(); lfoG.gain.value = 22; lfo.connect(lfoG); lfoG.connect(o.detune); o.connect(g); lfo.start(t); lfo.stop(t + 1.0); o.start(t); o.stop(t + 1.0); },
+    giggle: () => { const ac = getAudioCtx(); const t = ac.currentTime; const o = osc(ac, 'sine', 440); const { g } = env(ac, 0.15, 0.02, 0.05, 0.6, 0.5, masterGainNode); o.frequency.setValueAtTime(220, t); o.frequency.linearRampToValueAtTime(880, t + 0.4); o.frequency.linearRampToValueAtTime(330, t + 0.7); o.frequency.linearRampToValueAtTime(660, t + 1.0); const lfo = osc(ac, 'sine', 9); const lfoG = ac.createGain(); lfoG.gain.value = 30; lfo.connect(lfoG); lfoG.connect(o.detune); o.connect(g); lfo.start(t); lfo.stop(t + 1.1); o.start(t); o.stop(t + 1.1); } }
+];
+
+function soundForChar(char, type) {
+  if (!soundUnlocked) return;
+  const idx = characters.indexOf(char);
+  const sounds = CHAR_SOUNDS[Math.max(0, Math.min(idx, CHAR_SOUNDS.length - 1))];
+  if (!sounds) return;
+  const fn = sounds[type === 'collide' ? 'grab' : type];
+  if (fn) fn();
+}
+
+// ─── Character Definitions ───
+const SHAPES = {
+  circle: 'circle',
+  rect: 'rect',
+  triangle: 'triangle',
+  egg: 'egg',
+  star: 'star',
+  blob: 'blob',
+  fluff: 'fluff',
+  hexagon: 'hexagon',
+  crown: 'crown',
+  flower: 'flower',
+  jagged_rect: 'jagged_rect',
+  bean: 'bean',
+  cloud_flat: 'cloud_flat'
+};
+
+class Character {
+  constructor(cfg) {
+    this.shape = cfg.shape;
+    this.baseColor = cfg.color;
+    this.size = cfg.size;
+    this.x = cfg.x; this.y = cfg.y;
+    this.vx = 0; this.vy = 0;
+    this.rotation = cfg.rotation || 0;
+    this.targetRotation = this.rotation;
+    this.faceType = cfg.faceType || 'normal';
+    this.mouthType = cfg.mouthType || 'smile';
+    this.eyes = cfg.eyes || {};
+    this.accessories = cfg.accessories || {};
+    this.decorations = cfg.decorations || [];
+    
+    // Squish physics
+    this.scaleX = 1; this.scaleY = 1;
+    this.targetScaleX = 1; this.targetScaleY = 1;
+    this.squishVx = 0; this.squishVy = 0;
+    
+    // Emotion state
+    this.emotion = 'idle'; 
+    this.emotionTimer = 0;
+    this.emotionIntensity = 0;
+    this.blinkTimer = Math.random() * 200;
+    this.isBlinking = false;
+    this.blinkDuration = 0;
+    
+    // Drag state
+    this.dragging = false;
+    this.dragOffsetX = 0;
+    this.dragOffsetY = 0;
+    this.lastDragX = 0;
+    this.lastDragY = 0;
+    
+    // Idle float
+    this.floatPhase = Math.random() * Math.PI * 2;
+    this.floatSpeed = 0.3 + Math.random() * 0.3;
+    this.floatAmp = 3 + Math.random() * 4;
+    
+    // Transparency
+    this.alpha = cfg.alpha || 1.0;
+    
+    // Jiggle on nearby motion
+    this.jiggleAmount = 0;
+    this.jigglePhase = 0;
+    
+    // Pupil tracking
+    this.pupilOffsetX = 0;
+    this.pupilOffsetY = 0;
+    
+    // Giggle wobble
+    this.gigglePhase = 0;
+    
+    // Z-order
+    this.zIndex = cfg.zIndex || 0;
+    this._blobSeed = cfg.blobSeed || Math.random() * Math.PI * 2;
+  }
+
+  getRadius() {
+    if (this.shape === SHAPES.circle || this.shape === SHAPES.egg || this.shape === SHAPES.blob || this.shape === SHAPES.star) return this.size;
+    if (this.shape === SHAPES.fluff || this.shape === SHAPES.flower || this.shape === SHAPES.hexagon || this.shape === SHAPES.jagged_rect) return this.size * 0.9;
+    if (this.shape === SHAPES.bean) return this.size * 0.8;
+    if (this.shape === SHAPES.crown || this.shape === SHAPES.cloud_flat) return this.size * 0.85;
+    if (this.shape === SHAPES.rect) return this.size * 0.8;
+    if (this.shape === SHAPES.triangle) return this.size * 0.85;
+    return this.size;
+  }
+
+  containsPoint(px, py) {
+    const r = this.getRadius();
+    return dist({x: px, y: py}, {x: this.x, y: this.y}) < r * 1.1;
+  }
+
+  setEmotion(e, intensity = 1) {
+    this.emotion = e;
+    this.emotionTimer = 0;
+    this.emotionIntensity = intensity;
+    if (e === 'giggle' || e === 'laughing') {
+      this.gigglePhase = 0;
+    }
+  }
+
+  update(dt, time, allChars, pointers) {
+    const floatY = Math.sin(time * this.floatSpeed + this.floatPhase) * this.floatAmp;
+    const floatX = Math.cos(time * this.floatSpeed * 0.7 + this.floatPhase) * this.floatAmp * 0.5;
+
+    if (!this.dragging) {
+      this.vx *= 0.92;
+      this.vy *= 0.92;
+      this.x += this.vx;
+      this.y += this.vy;
+      
+      const pad = this.getRadius() * 0.6;
+      if (this.x < pad) { this.x = pad; this.vx *= -0.4; }
+      if (this.x > W - pad) { this.x = W - pad; this.vx *= -0.4; }
+      if (this.y < pad) { this.y = pad; this.vy *= -0.4; }
+      if (this.y > H - pad) { this.y = H - pad; this.vy *= -0.4; }
+    }
+
+    for (const other of allChars) {
+      if (other === this) continue;
+      const d = dist(this, other);
+      const minDist = (this.getRadius() + other.getRadius()) * 0.75;
+      if (d < minDist && d > 0.1) {
+        const overlap = minDist - d;
+        const nx = (this.x - other.x) / d;
+        const ny = (this.y - other.y) / d;
+        const push = overlap * 0.08;
+        if (!this.dragging) { this.vx += nx * push; this.vy += ny * push; }
+        if (!other.dragging) { other.vx -= nx * push; other.vy -= ny * push; }
+        const relSpeed = Math.hypot(this.vx - other.vx, this.vy - other.vy);
+        if (relSpeed > 3) {
+          soundThrottled('collide-' + this.zIndex, () => soundForChar(this, 'collide'), 400);
+        }
+      }
+    }
+
+    const squishStiff = 0.15;
+    const squishDamp = 0.7;
+    this.squishVx += (this.targetScaleX - this.scaleX) * squishStiff;
+    this.squishVy += (this.targetScaleY - this.scaleY) * squishStiff;
+    this.squishVx *= squishDamp;
+    this.squishVy *= squishDamp;
+    this.scaleX += this.squishVx;
+    this.scaleY += this.squishVy;
+    this.targetScaleX = lerp(this.targetScaleX, 1, 0.05);
+    this.targetScaleY = lerp(this.targetScaleY, 1, 0.05);
+
+    this.rotation = lerp(this.rotation, this.targetRotation, 0.08);
+
+    this.blinkTimer--;
+    if (this.blinkTimer <= 0 && !this.isBlinking && this.faceType !== 'dots') {
+      this.isBlinking = true;
+      this.blinkDuration = 6;
+      this.blinkTimer = 100 + Math.random() * 200;
+    }
+    if (this.isBlinking) {
+      this.blinkDuration--;
+      if (this.blinkDuration <= 0) this.isBlinking = false;
+    }
+
+    this.emotionTimer += dt;
+    if (this.emotion !== 'idle' && this.emotionTimer > 120) {
+      this.emotion = 'idle';
+      this.emotionIntensity = 0;
+    }
+
+    if (this.emotion === 'giggle' || this.emotion === 'laughing') {
+      this.gigglePhase += 0.4;
+      this.jiggleAmount = this.emotion === 'laughing' ? 4 : 2;
+    } else {
+      this.jiggleAmount *= 0.9;
+    }
+
+    let nearestPointer = null;
+    let nearestDist = Infinity;
+    for (const p of pointers) {
+      const d = dist(p, this);
+      if (d < nearestDist) { nearestDist = d; nearestPointer = p; }
+    }
+    if (nearestPointer && nearestDist < 300 && this.faceType !== 'dots') {
+      const dx = nearestPointer.x - this.x;
+      const dy = nearestPointer.y - this.y;
+      const maxOffset = 4;
+      const angle = Math.atan2(dy, dx);
+      const strength = clamp(1 - nearestDist / 300, 0, 1);
+      this.pupilOffsetX = lerp(this.pupilOffsetX, Math.cos(angle) * maxOffset * strength, 0.1);
+      this.pupilOffsetY = lerp(this.pupilOffsetY, Math.sin(angle) * maxOffset * strength, 0.1);
+    } else {
+      this.pupilOffsetX = lerp(this.pupilOffsetX, 0, 0.05);
+      this.pupilOffsetY = lerp(this.pupilOffsetY, 0, 0.05);
+    }
+
+    this._floatX = floatX;
+    this._floatY = floatY;
+  }
+
+  draw(ctx, time) {
+    ctx.save();
+    const jx = this.jiggleAmount * Math.sin(this.gigglePhase);
+    const jy = this.jiggleAmount * Math.cos(this.gigglePhase * 1.3);
+    
+    const drawX = this.x + (this.dragging ? 0 : this._floatX) + jx;
+    const drawY = this.y + (this.dragging ? 0 : this._floatY) + jy;
+    
+    ctx.translate(drawX, drawY);
+    ctx.rotate(this.rotation);
+    ctx.scale(this.scaleX, this.scaleY);
+    ctx.globalAlpha = this.alpha;
+
+    this._drawShape(ctx, time);
+    this._drawFace(ctx, time);
+    
+    ctx.restore();
+  }
+
+  _drawShape(ctx, time) {
+    const s = this.size;
+
+    if (Array.isArray(this.baseColor)) {
+      if (this.baseColor.length === 2) {
+         let grad = ctx.createLinearGradient(0, -s, 0, s);
+         grad.addColorStop(0, this.baseColor[0]);
+         grad.addColorStop(1, this.baseColor[1]);
+         ctx.fillStyle = grad;
+      } else {
+         let grad = ctx.createLinearGradient(-s, -s, s, s);
+         this.baseColor.forEach((c, i) => grad.addColorStop(i/(this.baseColor.length-1), c));
+         ctx.fillStyle = grad;
+      }
+    } else {
+      ctx.fillStyle = this.baseColor;
+    }
+
+    switch (this.shape) {
+      case SHAPES.circle:
+        ctx.beginPath();
+        ctx.arc(0, 0, s, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+
+      case SHAPES.rect:
+        ctx.beginPath();
+        ctx.rect(-s*0.9, -s*0.9, s*1.8, s*1.8);
+        ctx.fill();
+        break;
+
+      case SHAPES.triangle:
+        ctx.beginPath();
+        ctx.moveTo(0, -s);
+        ctx.lineTo(s * 0.9, s * 0.7);
+        ctx.lineTo(-s * 0.9, s * 0.7);
+        ctx.closePath();
+        ctx.fill();
+        break;
+
+      case SHAPES.egg:
+        ctx.beginPath();
+        ctx.ellipse(0, 0, s * 0.75, s, 0, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+
+      case SHAPES.star: {
+        const pts = 5;
+        ctx.beginPath();
+        for (let i = 0; i < pts * 2; i++) {
+          const a = (i * Math.PI) / pts - Math.PI / 2;
+          const rad = i % 2 === 0 ? s : s * 0.45;
+          if (i === 0) ctx.moveTo(Math.cos(a) * rad, Math.sin(a) * rad);
+          else ctx.lineTo(Math.cos(a) * rad, Math.sin(a) * rad);
+        }
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.blob: {
+        ctx.beginPath();
+        const bpts = 8;
+        for (let i = 0; i < bpts; i++) {
+          const a = (i / bpts) * Math.PI * 2;
+          const r = s * (0.85 + 0.15 * Math.sin(i * 2.4 + (this._blobSeed || 0)));
+          const x = Math.cos(a) * r;
+          const y = Math.sin(a) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.fluff: {
+        ctx.beginPath();
+        for(let i=0; i<12; i++) {
+          let a = i * Math.PI*2/12;
+          let r = s*0.75;
+          ctx.arc(Math.cos(a)*r, Math.sin(a)*r, s*0.35, 0, Math.PI*2);
+        }
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.hexagon: {
+        ctx.beginPath();
+        for(let i=0; i<6; i++) {
+          let a = i * Math.PI / 3 - Math.PI/2;
+          if(i===0) ctx.moveTo(Math.cos(a)*s, Math.sin(a)*s);
+          else ctx.lineTo(Math.cos(a)*s, Math.sin(a)*s);
+        }
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.crown: {
+        ctx.beginPath();
+        ctx.moveTo(-s*0.9, s*0.7); 
+        ctx.lineTo(s*0.9, s*0.7);  
+        ctx.lineTo(s*0.9, -s*0.6); 
+        ctx.lineTo(s*0.3, -s*0.1); 
+        ctx.lineTo(0, -s*0.8);     
+        ctx.lineTo(-s*0.3, -s*0.1);
+        ctx.lineTo(-s*0.9, -s*0.6);
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.flower: {
+        ctx.beginPath();
+        for(let i=0; i<8; i++) {
+          let a = i * Math.PI/4;
+          let r = s*0.65;
+          ctx.arc(Math.cos(a)*r, Math.sin(a)*r, s*0.4, 0, Math.PI*2);
+        }
+        ctx.arc(0, 0, s*0.6, 0, Math.PI*2); 
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.jagged_rect: {
+        ctx.beginPath();
+        ctx.moveTo(-s, s*0.6);
+        ctx.lineTo(s, s*0.6);
+        ctx.lineTo(s, -s*0.4);
+        let zigs = 6;
+        let step = (s*2)/zigs;
+        for(let i=1; i<=zigs; i++) {
+           ctx.lineTo(s - step*(i - 0.5), -s*0.7);
+           ctx.lineTo(s - step*i, -s*0.4);
+        }
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+
+      case SHAPES.bean: {
+        ctx.lineCap = 'round';
+        ctx.lineWidth = s * 0.9;
+        ctx.strokeStyle = ctx.fillStyle; 
+        ctx.beginPath();
+        ctx.moveTo(-s*0.3, -s*0.4);
+        ctx.quadraticCurveTo(s*0.7, -s*0.4, s*0.4, s*0.5);
+        ctx.stroke();
+        break;
+      }
+
+      case SHAPES.cloud_flat: {
+        ctx.beginPath();
+        ctx.moveTo(-s*1.2, s*0.4);
+        ctx.lineTo(s*1.2, s*0.4);
+        ctx.arc(s*0.7, s*0.1, s*0.3, 0, Math.PI, true);
+        ctx.arc(0, -s*0.2, s*0.5, 0, Math.PI, true);
+        ctx.arc(-s*0.7, s*0.1, s*0.3, 0, Math.PI, true);
+        ctx.closePath();
+        ctx.fill();
+        break;
+      }
+    }
+
+    for (const deco of this.decorations) {
+      deco(ctx, s, time);
+    }
+  }
+
+  _drawFace(ctx, time) {
+    const s = this.size;
+    const es = this.eyes;
+    const eyeScale = es.scale || 1;
+    const eyeY = (es.yOffset || -0.15) * s;
+    const eyeSpacing = (es.spacing || 0.28) * s;
+    const eyeSize = s * 0.1 * eyeScale;
+    const pupilSize = eyeSize * 0.55;
+
+    const eyeL = { x: -eyeSpacing, y: eyeY };
+    const eyeR = { x: eyeSpacing, y: eyeY };
+
+    if (this.isBlinking && this.faceType !== 'dots') {
+      ctx.strokeStyle = '#222'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(eyeL.x - eyeSize, eyeL.y); ctx.lineTo(eyeL.x + eyeSize, eyeL.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(eyeR.x - eyeSize, eyeR.y); ctx.lineTo(eyeR.x + eyeSize, eyeR.y); ctx.stroke();
+    } else {
+      if (this.faceType === 'dots') {
+        ctx.fillStyle = '#1a1a2e';
+        for (const eye of [eyeL, eyeR]) {
+          ctx.beginPath(); ctx.arc(eye.x, eye.y, eyeSize*0.7, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.beginPath(); ctx.arc(eye.x - eyeSize*0.15, eye.y - eyeSize*0.15, eyeSize*0.2, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#1a1a2e';
+        }
+      } else {
+        ctx.fillStyle = '#fff';
+        for (const eye of [eyeL, eyeR]) {
+          ctx.beginPath(); ctx.ellipse(eye.x, eye.y, eyeSize, eyeSize * 1.1, 0, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.fillStyle = '#1a1a2e';
+        for (const eye of [eyeL, eyeR]) {
+          ctx.beginPath(); ctx.arc(eye.x + this.pupilOffsetX, eye.y + this.pupilOffsetY, pupilSize, 0, Math.PI * 2); ctx.fill();
+        }
+        if (this.emotion === 'surprised') {
+          ctx.strokeStyle = '#1a1a2e'; ctx.lineWidth = 1.5;
+          for (const eye of [eyeL, eyeR]) {
+            ctx.beginPath(); ctx.ellipse(eye.x, eye.y, eyeSize * 1.15, eyeSize * 1.25, 0, 0, Math.PI * 2); ctx.stroke();
+          }
+        }
+      }
+    }
+
+    if (this.emotion === 'happy' || this.emotion === 'giggle' || this.emotion === 'laughing') {
+      ctx.fillStyle = 'rgba(255, 120, 150, 0.4)';
+      ctx.beginPath(); ctx.ellipse(eyeL.x - eyeSize * 0.5, eyeY + eyeSize * 2.2, eyeSize * 1.1, eyeSize * 0.7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(eyeR.x + eyeSize * 0.5, eyeY + eyeSize * 2.2, eyeSize * 1.1, eyeSize * 0.7, 0, 0, Math.PI * 2); ctx.fill();
+    }
+
+    const mouthY = eyeY + s * (this.eyes.mouthOffset || 0.28);
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.fillStyle = '#1a1a2e';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+
+    const drawSmile = () => {
+      ctx.beginPath(); ctx.arc(0, mouthY - s * 0.05, s * 0.08, 0.15, Math.PI - 0.15); ctx.stroke();
+    };
+
+    switch (this.emotion) {
+      case 'idle':
+        if (this.mouthType === 'straight') {
+          ctx.beginPath(); ctx.moveTo(-s*0.12, mouthY); ctx.lineTo(s*0.12, mouthY); ctx.stroke();
+        } else if (this.mouthType === 'open') {
+          ctx.beginPath(); ctx.ellipse(0, mouthY, s * 0.06, s * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+        } else if (this.mouthType === 'toothy') {
+          ctx.fillStyle = '#fff';
+          ctx.beginPath(); ctx.arc(0, mouthY, s*0.4, 0, Math.PI); ctx.fill();
+          ctx.lineWidth = 1.5; ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(-s*0.4, mouthY); ctx.lineTo(s*0.4, mouthY); ctx.stroke();
+          for(let i=-2; i<=2; i++) {
+            ctx.beginPath(); let mx = i * s*0.12; let my = mouthY + Math.sqrt(Math.max(0, (s*0.4)**2 - mx**2));
+            ctx.moveTo(mx, mouthY); ctx.lineTo(mx, my); ctx.stroke();
+          }
+        } else if (this.mouthType === 'tiny') {
+          ctx.beginPath(); ctx.arc(0, mouthY, s * 0.04, 0.15, Math.PI - 0.15); ctx.stroke();
+        } else {
+          drawSmile();
+        }
+        break;
+
+      case 'happy':
+        if (this.mouthType === 'toothy') {
+          // Keep toothy smile
+          ctx.fillStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, mouthY, s*0.45, 0, Math.PI); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(-s*0.45, mouthY); ctx.lineTo(s*0.45, mouthY); ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.arc(0, mouthY - s * 0.06, s * 0.12, 0.1, Math.PI - 0.1); ctx.stroke();
+        }
+        break;
+
+      case 'surprised':
+        ctx.fillStyle = '#1a1a2e'; ctx.beginPath(); ctx.ellipse(0, mouthY, s * 0.06, s * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ff8fab'; ctx.beginPath(); ctx.ellipse(0, mouthY, s * 0.04, s * 0.055, 0, 0, Math.PI * 2); ctx.fill();
+        break;
+
+      case 'giggle':
+        const waveAmp = 2 * Math.sin(this.gigglePhase * 0.5);
+        ctx.beginPath(); ctx.moveTo(-s * 0.1, mouthY + waveAmp);
+        ctx.quadraticCurveTo(-s * 0.05, mouthY + s * 0.06 - waveAmp, 0, mouthY + waveAmp);
+        ctx.quadraticCurveTo(s * 0.05, mouthY + s * 0.06 - waveAmp, s * 0.1, mouthY + waveAmp);
+        ctx.stroke();
+        break;
+
+      case 'laughing':
+        ctx.fillStyle = '#1a1a2e';
+        ctx.beginPath(); ctx.ellipse(0, mouthY, s * 0.1, s * 0.07 + Math.abs(Math.sin(this.gigglePhase)) * s * 0.04, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ff8fab';
+        ctx.beginPath(); ctx.ellipse(0, mouthY + s * 0.02, s * 0.06, s * 0.03 + Math.abs(Math.sin(this.gigglePhase)) * s * 0.02, 0, 0, Math.PI * 2); ctx.fill();
+        break;
+    }
+
+    if (this.accessories.glasses) {
+      this._drawGlasses(ctx, eyeL, eyeR, eyeSize);
+    }
+  }
+
+  _drawGlasses(ctx, eyeL, eyeR, eyeSize) {
+    const gs = eyeSize * 2.2;
+    ctx.strokeStyle = this.accessories.glassesColor || '#FFD100';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath(); ctx.arc(eyeL.x, eyeL.y, gs, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(eyeR.x, eyeR.y, gs, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(eyeL.x + gs, eyeL.y); ctx.lineTo(eyeR.x - gs, eyeR.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(eyeR.x + gs, eyeR.y); ctx.lineTo(eyeR.x + gs + eyeSize * 2, eyeR.y - eyeSize * 0.5); ctx.stroke();
+  }
+}
+
+let characters = [];
+
+function initCharacters() {
+  const minDim = Math.min(W, H);
+  const baseSize = Math.max(36, Math.min(minDim * 0.117, 104));
+
+  function pos(col, row, offsetX = 0, offsetY = 0) {
+    const cols = 4, rows = 4;
+    const marginX = W * 0.08, marginY = H * 0.1;
+    const cellW = (W - marginX * 2) / cols;
+    const cellH = (H - marginY * 2) / rows;
+    return {
+      x: marginX + cellW * col + cellW * 0.5 + offsetX * baseSize,
+      y: marginY + cellH * row + cellH * 0.5 + offsetY * baseSize
+    };
+  }
+
+  characters = [
+    // 1. Orange Fluff with Glasses
+    new Character({
+      shape: SHAPES.fluff, color: '#F27D42', size: baseSize * 1.0, ...pos(0, 0),
+      faceType: 'dots', eyes: { yOffset: -0.1, spacing: 0.25 },
+      accessories: { glasses: true, glassesColor: '#6B4C9A' }, zIndex: 1
+    }),
+
+    // 2. Green Hexagon
+    new Character({
+      shape: SHAPES.hexagon, color: '#68C16A', size: baseSize * 0.95, ...pos(1, 0, 0.3),
+      faceType: 'dots', mouthType: 'smile', eyes: { yOffset: -0.05, spacing: 0.25 }, zIndex: 2
+    }),
+
+    // 3. Yellow Blob (small, surprised)
+    new Character({
+      shape: SHAPES.blob, color: '#F8C822', size: baseSize * 0.65, ...pos(2, 0, -0.2),
+      faceType: 'dots', mouthType: 'open', eyes: { yOffset: -0.1, spacing: 0.3 }, zIndex: 3
+    }),
+
+    // 4. Beige Egg (toothy)
+    new Character({
+      shape: SHAPES.egg, color: '#CDB38E', size: baseSize * 1.05, ...pos(3, 0),
+      faceType: 'normal', mouthType: 'toothy', eyes: { yOffset: -0.25, spacing: 0.2, scale: 0.8 },
+      decorations: [
+        (ctx, s) => { 
+          ctx.fillStyle = '#F8C822';
+          ctx.beginPath(); ctx.moveTo(0, -s*0.1); ctx.lineTo(s*0.15, s*0.12); ctx.lineTo(-s*0.15, s*0.12); ctx.fill();
+        }
+      ], zIndex: 4
+    }),
+
+    // 5. Pink Crown
+    new Character({
+      shape: SHAPES.crown, color: '#F285A2', size: baseSize * 0.95, ...pos(0, 1),
+      faceType: 'dots', mouthType: 'tiny', eyes: { yOffset: 0.1, spacing: 0.4 }, zIndex: 5
+    }),
+
+    // 6. Blue Striped Circle
+    new Character({
+      shape: SHAPES.circle, color: '#8BB6D6', size: baseSize * 0.95, ...pos(1, 1),
+      faceType: 'normal', mouthType: 'straight', eyes: { yOffset: -0.1, spacing: 0.25 },
+      decorations: [
+        (ctx, s) => { 
+          ctx.save(); ctx.beginPath(); ctx.arc(0,0,s,0,Math.PI*2); ctx.clip();
+          ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 3;
+          for(let i=-s*2; i<s*2; i+=14) {
+             ctx.beginPath(); ctx.moveTo(i, -s); ctx.lineTo(i-s, s); ctx.stroke();
+          }
+          ctx.restore();
+        }
+      ], zIndex: 6
+    }),
+
+    // 7. Pink Triangle
+    new Character({
+      shape: SHAPES.triangle, color: '#F2A4B3', size: baseSize * 0.9, ...pos(2, 1),
+      faceType: 'dots', mouthType: 'straight', eyes: { yOffset: 0.1, spacing: 0.25, mouthOffset: 0.15 },
+      decorations: [
+        (ctx, s) => { 
+          ctx.strokeStyle = '#1a1a2e'; ctx.lineWidth = 2.5; ctx.lineCap='round';
+          ctx.beginPath(); ctx.moveTo(0, s*0.1); ctx.lineTo(-s*0.06, s*0.2); ctx.lineTo(0, s*0.2); ctx.stroke();
+        }
+      ], zIndex: 7
+    }),
+
+    // 8. Split Flower
+    new Character({
+      shape: SHAPES.flower, color: '#4DB59B', size: baseSize * 0.95, ...pos(3, 1),
+      faceType: 'dots', mouthType: 'tiny', eyes: { yOffset: -0.05, spacing: 0.2 },
+      decorations: [
+        (ctx, s) => { 
+          ctx.save(); ctx.beginPath(); ctx.rect(0, -s*1.5, s*1.5, s*3); ctx.clip();
+          ctx.fillStyle = '#F287A2';
+          ctx.beginPath();
+          for(let i=0; i<8; i++) {
+            let a = i * Math.PI/4; let r = s*0.65;
+            ctx.arc(Math.cos(a)*r, Math.sin(a)*r, s*0.4, 0, Math.PI*2);
+          }
+          ctx.arc(0, 0, s*0.6, 0, Math.PI*2); ctx.fill();
+          ctx.restore();
+        }
+      ], zIndex: 8
+    }),
+
+    // 9. Red Triangle
+    new Character({
+      shape: SHAPES.triangle, color: '#DE4232', size: baseSize * 0.9, ...pos(0, 2),
+      faceType: 'normal', mouthType: 'open', eyes: { yOffset: 0.05, spacing: 0.25 },
+      decorations: [
+        (ctx, s) => { 
+          ctx.fillStyle = 'rgba(0,0,0,0.15)';
+          for(let i=0; i<15; i++) {
+             ctx.beginPath();
+             let x = (Math.random()-0.5)*s*1.2; let y = (Math.random())*s*0.8 - s*0.2;
+             ctx.arc(x, y, s*0.03, 0, Math.PI*2); ctx.fill();
+          }
+        }
+      ], zIndex: 9
+    }),
+
+    // 10. Orange Jagged Rect
+    new Character({
+      shape: SHAPES.jagged_rect, color: '#F27A33', size: baseSize * 0.95, ...pos(1, 2),
+      faceType: 'normal', mouthType: 'smile', eyes: { yOffset: 0.1, spacing: 0.35, scale: 0.8 }, zIndex: 10
+    }),
+
+    // 11. Gradient Square
+    new Character({
+      shape: SHAPES.rect, color: ['#F281A6', '#F4A657'], size: baseSize * 0.85, ...pos(2, 2),
+      faceType: 'normal', mouthType: 'straight', eyes: { yOffset: -0.1, spacing: 0.35, scale: 1.4, mouthOffset: 0.35 }, zIndex: 11
+    }),
+
+    // 12. Green Bean
+    new Character({
+      shape: SHAPES.bean, color: '#8ED183', size: baseSize * 0.95, ...pos(3, 2),
+      faceType: 'dots', mouthType: 'smile', eyes: { yOffset: -0.4, spacing: 0.15, mouthOffset: 0.15 },
+      rotation: 0.2, zIndex: 12
+    }),
+
+    // 13. Rainbow Star
+    new Character({
+      shape: SHAPES.star, color: ['#F2A4B3', '#F8C822', '#8ED183', '#8BB6D6'], size: baseSize * 1.05, ...pos(1, 3, 0, -1.2), 
+      faceType: 'dots', mouthType: 'smile', eyes: { yOffset: 0.0, spacing: 0.2 }, zIndex: 13
+    }),
+
+    // 14. Yellow Cloud with Beret
+    new Character({
+      shape: SHAPES.cloud_flat, color: '#F2C83A', size: baseSize * 1.05, ...pos(2, 3, 0, -1.2), 
+      faceType: 'dots', mouthType: 'smile', eyes: { yOffset: 0.1, spacing: 0.3 },
+      decorations: [
+        (ctx, s) => { 
+          ctx.fillStyle = '#1D3B70';
+          ctx.beginPath(); ctx.ellipse(-s*0.5, -s*0.25, s*0.35, s*0.12, -0.2, 0, Math.PI*2); ctx.fill();
+          ctx.beginPath(); ctx.arc(-s*0.5, -s*0.35, s*0.05, 0, Math.PI*2); ctx.fill();
+        }
+      ], zIndex: 14
+    })
+  ];
+}
+
+class Sparkle {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = (Math.random() - 0.5) * 3;
+    this.vy = (Math.random() - 0.5) * 3 - 1;
+    this.life = 1;
+    this.decay = 0.02 + Math.random() * 0.02;
+    this.size = 2 + Math.random() * 3;
+    this.color = ['#F8C822', '#F285A2', '#4DB59B', '#8BB6D6', '#F27A33'][Math.floor(Math.random() * 5)];
+    this.type = Math.random() > 0.5 ? 'star' : 'circle';
+  }
+  update() { this.x += this.vx; this.y += this.vy; this.vy += 0.04; this.life -= this.decay; }
+  draw(ctx) {
+    ctx.globalAlpha = this.life;
+    ctx.fillStyle = this.color;
+    if (this.type === 'star') drawStar(ctx, this.x, this.y, this.size, 4);
+    else { ctx.beginPath(); ctx.arc(this.x, this.y, this.size * 0.6, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawStar(ctx, cx, cy, r, points) {
+  ctx.beginPath();
+  for (let i = 0; i < points * 2; i++) {
+    const a = (i * Math.PI) / points - Math.PI / 2;
+    const rad = i % 2 === 0 ? r : r * 0.4;
+    const method = i === 0 ? 'moveTo' : 'lineTo';
+    ctx[method](cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+let sparkles = [];
+let activePointers = new Map(); 
+let allPointerPositions = []; 
+
+function getCharAt(x, y) {
+  for (let i = characters.length - 1; i >= 0; i--) {
+    if (characters[i].containsPoint(x, y)) return characters[i];
+  }
+  return null;
+}
+
+function onPointerDown(id, x, y) {
+  unlockAudio();
+  const char = getCharAt(x, y);
+  if (char) {
+    char.dragging = true;
+    char.dragOffsetX = x - char.x; char.dragOffsetY = y - char.y;
+    char.lastDragX = x; char.lastDragY = y;
+    char.vx = 0; char.vy = 0;
+    char.targetScaleX = 1.15; char.targetScaleY = 0.88;
+    char.setEmotion('surprised', 0.8);
+    soundForChar(char, 'grab');
+    const maxZ = Math.max(...characters.map(c => c.zIndex));
+    char.zIndex = maxZ + 1;
+    activePointers.set(id, { x, y, char });
+    for (let i = 0; i < 5; i++) sparkles.push(new Sparkle(x, y));
+  } else {
+    activePointers.set(id, { x, y, char: null });
+  }
+}
+
+function onPointerMove(id, x, y) {
+  const ptr = activePointers.get(id);
+  if (!ptr) return;
+  ptr.x = x; ptr.y = y;
+  
+  if (ptr.char && ptr.char.dragging) {
+    const char = ptr.char;
+    const prevX = char.x; const prevY = char.y;
+    char.x = x - char.dragOffsetX; char.y = y - char.dragOffsetY;
+    char.lastDragX = x; char.lastDragY = y;
+    
+    const speed = Math.hypot(char.x - prevX, char.y - prevY);
+    if (speed > 2) {
+      const angle = Math.atan2(char.y - prevY, char.x - prevX);
+      char.targetScaleX = 1 + speed * 0.008; char.targetScaleY = 1 - speed * 0.006;
+      char.targetRotation = angle * 0.15;
+      if (speed > 8 && char.emotion !== 'laughing') { char.setEmotion('laughing'); soundThrottled('laugh', () => soundForChar(char, 'laugh'), 350); }
+      else if (speed > 4 && char.emotion !== 'laughing') { char.setEmotion('giggle'); soundThrottled('giggle', () => soundForChar(char, 'giggle'), 220); }
+      if (Math.random() > 0.6) sparkles.push(new Sparkle(char.x, char.y));
+    }
+    
+    for (const other of characters) {
+      if (other === char) continue;
+      const d = dist(char, other);
+      if (d < char.getRadius() + other.getRadius() + 20) {
+        if (other.emotion === 'idle') other.setEmotion(speed > 6 ? 'surprised' : 'happy');
+        const nx = (other.x - char.x) / (d || 1); const ny = (other.y - char.y) / (d || 1);
+        other.targetScaleX = 1 + nx * 0.08; other.targetScaleY = 1 + ny * 0.08;
+      }
+    }
+  }
+}
+
+function onPointerUp(id) {
+  const ptr = activePointers.get(id);
+  if (ptr && ptr.char) {
+    const char = ptr.char;
+    char.dragging = false;
+    char.targetScaleX = 0.9; char.targetScaleY = 1.12;
+    char.targetRotation = 0;
+    char.setEmotion('happy');
+    soundForChar(char, 'release');
+    for (let i = 0; i < 8; i++) sparkles.push(new Sparkle(char.x, char.y));
+  }
+  activePointers.delete(id);
+}
+
+canvas.addEventListener('touchstart', e => { e.preventDefault(); for (const t of e.changedTouches) onPointerDown(t.identifier, t.clientX, t.clientY); }, { passive: false });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); for (const t of e.changedTouches) onPointerMove(t.identifier, t.clientX, t.clientY); }, { passive: false });
+canvas.addEventListener('touchend', e => { for (const t of e.changedTouches) onPointerUp(t.identifier); });
+canvas.addEventListener('touchcancel', e => { for (const t of e.changedTouches) onPointerUp(t.identifier); });
+
+let mouseDown = false;
+canvas.addEventListener('mousedown', e => { mouseDown = true; onPointerDown('mouse', e.clientX, e.clientY); });
+canvas.addEventListener('mousemove', e => {
+  if (mouseDown) onPointerMove('mouse', e.clientX, e.clientY);
+  allPointerPositions = allPointerPositions.filter(p => p.id !== 'mouse-hover');
+  allPointerPositions.push({ id: 'mouse-hover', x: e.clientX, y: e.clientY });
+});
+canvas.addEventListener('mouseup', () => { mouseDown = false; onPointerUp('mouse'); });
+canvas.addEventListener('mouseleave', () => { mouseDown = false; onPointerUp('mouse'); });
+
+// ─── MediaPipe Hands ───
+let handLandmarks = [];
+let cameraActive = false;
+const videoEl = document.getElementById('webcamVideo');
+const videoContainer = document.getElementById('videoContainer');
+let mpHands = null;
+let mpCamera = null;
+
+document.getElementById('toggleCam').addEventListener('click', async () => {
+  if (cameraActive) stopCamera();
+  else await startCamera();
+});
+
+async function startCamera() {
+  try {
+    if (!mpHands) {
+      mpHands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}` });
+      mpHands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+      mpHands.onResults(onHandResults);
+    }
+    mpCamera = new Camera(videoEl, { onFrame: async () => { await mpHands.send({ image: videoEl }); }, width: 320, height: 240 });
+    await mpCamera.start();
+    cameraActive = true;
+    videoContainer.classList.add('active');
+    document.getElementById('toggleCam').textContent = '✋';
+  } catch (err) { console.warn('Camera error:', err); }
+}
+
+function stopCamera() {
+  if (mpCamera) { mpCamera.stop(); mpCamera = null; }
+  cameraActive = false; handLandmarks = [];
+  videoContainer.classList.remove('active');
+  document.getElementById('toggleCam').textContent = '🖐️';
+}
+
+function onHandResults(results) {
+  handLandmarks = [];
+  if (results.multiHandLandmarks) {
+    for (const hand of results.multiHandLandmarks) {
+      const tips = [4, 8, 12, 16, 20];
+      for (const idx of tips) {
+        const lm = hand[idx];
+        handLandmarks.push({ x: (1 - lm.x) * W, y: lm.y * H });
+      }
+      const wrist = hand[0]; const midBase = hand[9];
+      handLandmarks.push({ x: (1 - (wrist.x + midBase.x) / 2) * W, y: ((wrist.y + midBase.y) / 2) * H, isPalm: true });
+    }
+  }
+}
+
+let handPointers = new Map();
+
+function processHandInput() {
+  for (const [id] of handPointers) {
+    if (!handLandmarks.some((_, i) => `hand-${i}` === id)) {
+      const ptr = handPointers.get(id);
+      if (ptr && ptr.char) {
+        ptr.char.dragging = false; ptr.char.targetScaleX = 0.9; ptr.char.targetScaleY = 1.12; ptr.char.setEmotion('happy');
+      }
+      handPointers.delete(id);
+    }
+  }
+
+  for (let i = 0; i < handLandmarks.length; i++) {
+    const lm = handLandmarks[i]; const id = `hand-${i}`;
+    const char = getCharAt(lm.x, lm.y);
+    
+    if (char) {
+      if (!handPointers.has(id)) {
+        char.targetScaleX = 1.12; char.targetScaleY = 0.9; char.setEmotion('giggle');
+        soundThrottled('handtouch', () => soundForChar(char, 'grab'), 250);
+        handPointers.set(id, { char, lastX: lm.x, lastY: lm.y });
+      } else {
+        const prev = handPointers.get(id);
+        const speed = Math.hypot(lm.x - prev.lastX, lm.y - prev.lastY);
+        
+        if (speed > 3) {
+          char.vx += (lm.x - prev.lastX) * 0.3; char.vy += (lm.y - prev.lastY) * 0.3;
+          char.setEmotion(speed > 10 ? 'laughing' : 'giggle');
+          if (speed > 10) soundThrottled('handlaugh', () => soundForChar(char, 'laugh'), 350);
+          else soundThrottled('handgiggle', () => soundForChar(char, 'giggle'), 220);
+          
+          const angle = Math.atan2(lm.y - prev.lastY, lm.x - prev.lastX);
+          char.targetScaleX = 1 + speed * 0.005; char.targetScaleY = 1 - speed * 0.004;
+          if (Math.random() > 0.7) sparkles.push(new Sparkle(lm.x, lm.y));
+        } else {
+          if (char.emotion === 'idle') char.setEmotion('happy');
+          char.jiggleAmount = 2; char.gigglePhase += 0.2;
+        }
+        prev.lastX = lm.x; prev.lastY = lm.y;
+      }
+    } else {
+      if (handPointers.has(id) && handPointers.get(id).char) handPointers.get(id).char.setEmotion('happy');
+      handPointers.set(id, { char: null, lastX: lm.x, lastY: lm.y });
+    }
+  }
+}
+
+let lastTime = performance.now();
+let frame = 0;
+
+function loop(now) {
+  requestAnimationFrame(loop);
+  const dt = Math.min((now - lastTime) / 16.67, 3);
+  lastTime = now; frame++;
+  const time = now * 0.001;
+
+  ctx.clearRect(0, 0, W, H);
+
+  allPointerPositions = allPointerPositions.filter(p => p.id === 'mouse-hover');
+  for (const [, ptr] of activePointers) allPointerPositions.push({ id: 'touch', x: ptr.x, y: ptr.y });
+  for (const lm of handLandmarks) allPointerPositions.push({ id: 'hand', x: lm.x, y: lm.y });
+
+  if (handLandmarks.length > 0) processHandInput();
+
+  for (const char of characters) char.update(dt, time, characters, allPointerPositions);
+
+  const sorted = [...characters].sort((a, b) => a.zIndex - b.zIndex);
+
+  for (const char of sorted) char.draw(ctx, time);
+
+  if (handLandmarks.length > 0) {
+    ctx.globalAlpha = 0.25;
+    for (const lm of handLandmarks) {
+      ctx.fillStyle = lm.isPalm ? '#FF81AD' : '#42C9BA';
+      ctx.beginPath(); ctx.arc(lm.x, lm.y, lm.isPalm ? 8 : 4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  for (let i = sparkles.length - 1; i >= 0; i--) {
+    sparkles[i].update(); sparkles[i].draw(ctx);
+    if (sparkles[i].life <= 0) sparkles.splice(i, 1);
+  }
+}
+
+initCharacters();
+window.addEventListener('resize', () => { resize(); initCharacters(); });
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
