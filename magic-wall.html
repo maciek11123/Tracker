@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Magic Wall — Bluey Mirror · Worlds · Games</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Orbitron:wght@500;700;900&family=Baloo+2:wght@600;800&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
@@ -106,6 +107,27 @@ video#cam.cam-on{opacity:1}
 .switch::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .2s}
 .switch.on{background:rgba(0,229,255,.5)}
 .switch.on::after{left:21px}
+
+/* ───────── game iframe ───────── */
+#game-iframe-wrap{position:fixed;inset:0;z-index:5;display:none;background:#000}
+#game-iframe-wrap iframe{width:100%;height:100%;border:none}
+#game-iframe-close{position:fixed;top:max(14px,env(safe-area-inset-top,14px));left:max(14px,env(safe-area-inset-left,14px));z-index:6;padding:8px 14px;background:rgba(0,0,0,.7);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:8px;font-family:inherit;font-size:11px;letter-spacing:1px;cursor:pointer;display:none}
+
+/* ───────── remote panel ───────── */
+#remote-panel{position:fixed;bottom:max(12px,env(safe-area-inset-bottom,12px));right:max(14px,env(safe-area-inset-right,14px));z-index:30;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+#remote-btn{padding:8px 14px;border-radius:8px;font-family:inherit;font-size:11px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border:1px solid rgba(0,229,255,.4);background:rgba(0,229,255,.1);color:var(--cyan);transition:all .15s}
+#remote-btn.connected{border-color:rgba(80,250,123,.5);background:rgba(80,250,123,.1);color:var(--grass)}
+#remote-status{font-size:9px;color:rgba(255,255,255,.4);letter-spacing:1px;text-align:right}
+
+/* ───────── QR overlay ───────── */
+#qr-overlay{position:fixed;inset:0;z-index:500;background:rgba(3,4,10,.92);display:none;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:30px}
+#qr-overlay.show{display:flex}
+#qr-overlay h2{font-family:'Orbitron',sans-serif;font-size:18px;letter-spacing:3px;color:var(--cyan)}
+#qr-box{background:#fff;padding:16px;border-radius:12px}
+#qr-overlay .room-id{font-size:13px;letter-spacing:4px;color:rgba(255,255,255,.6);font-family:'JetBrains Mono',monospace}
+#qr-overlay .sub{font-size:11px;color:rgba(255,255,255,.4);text-align:center;max-width:300px;line-height:1.6}
+#qr-close{padding:10px 24px;border-radius:99px;font-family:inherit;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;border:1px solid var(--line);background:transparent;color:rgba(255,255,255,.6);transition:all .15s}
+#qr-close:hover{background:rgba(255,255,255,.08);color:#fff}
 
 /* ───────── calibration ───────── */
 #calib{position:fixed;inset:0;z-index:300;background:rgba(3,4,10,.94);display:none;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:24px;text-align:center}
@@ -270,6 +292,25 @@ video#cam.cam-on{opacity:1}
 <div id="toast"></div>
 <div id="hint">👋 Wave to say hi!</div>
 <div id="debug"></div>
+
+<!-- game iframe launcher -->
+<div id="game-iframe-wrap"><iframe id="game-iframe" allow="camera;microphone" sandbox="allow-scripts allow-same-origin allow-popups"></iframe></div>
+<button id="game-iframe-close">✕ Back to Wall</button>
+
+<!-- remote connect button -->
+<div id="remote-panel">
+  <div id="remote-status">Remote</div>
+  <button id="remote-btn">📡 Connect Remote</button>
+</div>
+
+<!-- QR overlay -->
+<div id="qr-overlay">
+  <h2>CONNECT REMOTE</h2>
+  <div id="qr-box"></div>
+  <div class="room-id" id="qr-room-id">—</div>
+  <div class="sub">Scan with your phone or visit:<br><span style="color:var(--cyan)">Tracker/magic-wall-remote.html</span></div>
+  <button id="qr-close">Close</button>
+</div>
 
 <script>
 // ═══════════════════════════════════════════════════
@@ -1379,6 +1420,273 @@ $('sw-holo').classList.toggle('on',holoEnabled);
 $('sw-autohide').classList.toggle('on',autoHide);
 $(`res-${currentRes}`).classList.add('active');
 applyPreviewTransform();
+
+// ═══════════════════════════════════════════════════
+//  GAME IFRAME LAUNCHER
+// ═══════════════════════════════════════════════════
+const GAME_LIST = [
+  { id: 'blobz',       label: '🔵 Blobz',         url: 'blobz.html' },
+  { id: 'pusheen',     label: '🐱 Pusheen',        url: 'Pusheen.html' },
+  { id: 'capy',        label: '🐾 Capy',           url: 'Capy.html' },
+  { id: 'capy2',       label: '🐾 Capy 2',         url: 'Capy2.html' },
+  { id: 'squishy',     label: '🧸 Squishy',        url: 'squishy-friends.html' },
+  { id: 'characters',  label: '🎭 Characters',     url: 'characters.html' },
+  { id: 'magic',       label: '✨ Magic Wall',     url: null }, // self
+];
+
+let activeGameUrl = null;
+const iframeWrap = $('game-iframe-wrap');
+const iframeEl   = $('game-iframe');
+const iframeClose = $('game-iframe-close');
+
+function launchGame(url) {
+  if (!url) return;
+  activeGameUrl = url;
+  iframeEl.src = url;
+  iframeWrap.style.display = 'block';
+  iframeClose.style.display = 'block';
+}
+function closeGame() {
+  iframeWrap.style.display = 'none';
+  iframeClose.style.display = 'none';
+  iframeEl.src = '';
+  activeGameUrl = null;
+}
+iframeClose.onclick = closeGame;
+
+// postMessage to iframe
+function sendToGame(data) {
+  if (!iframeEl.contentWindow) return;
+  try { iframeEl.contentWindow.postMessage(data, '*'); } catch(e) {}
+}
+
+// Broadcast blob events to iframe — hook into hand results
+const _origOnHandsResults = onHandsResults;
+function onHandsResults(results) {
+  _origOnHandsResults(results);
+  if (!activeGameUrl) return;
+  const hc = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+  for (let i = 0; i < hc; i++) {
+    const lm = results.multiHandLandmarks[i];
+    const palm = lm[9];
+    const tip = lm[8];
+    const x = mirrorX ? 1 - palm.x : palm.x;
+    const y = palm.y;
+    const size = Math.hypot((lm[4].x - lm[20].x) * W, (lm[4].y - lm[20].y) * H);
+    sendToGame({ type: 'blob', x, y, size: Math.max(40, size), index: i });
+    sendToGame({ type: 'fingertip', x: mirrorX ? 1 - tip.x : tip.x, y: tip.y, index: i });
+  }
+}
+
+// Broadcast skeleton to iframe
+const _origOnPoses = onPoses;
+function onPoses(poses) {
+  _origOnPoses(poses);
+  if (!activeGameUrl || !poses) return;
+  sendToGame({ type: 'skeleton', poses: poses.map(p => ({
+    score: p.score,
+    keypoints: p.keypoints.map(k => ({
+      name: k.name, score: k.score,
+      x: mirrorX ? 1 - k.x / (srcDims().w) * (srcDims().w / srcDims().w) : k.x / srcDims().w,
+      y: k.y / srcDims().h
+    }))
+  }))});
+}
+
+// ═══════════════════════════════════════════════════
+//  PEERJS HOST + REMOTE BRIDGE
+// ═══════════════════════════════════════════════════
+let peer = null, remoteConn = null, roomId = null;
+let videoStream = null; // WebRTC canvas stream
+const remoteBtn = $('remote-btn');
+const remoteStatus = $('remote-status');
+const qrOverlay = $('qr-overlay');
+
+function generateRoomId() {
+  return 'mw-' + Math.random().toString(36).slice(2, 8);
+}
+
+function drawQR(text) {
+  // Simple QR via Google Charts API
+  const box = $('qr-box');
+  const img = document.createElement('img');
+  img.src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(text)}`;
+  img.width = 200; img.height = 200;
+  box.innerHTML = '';
+  box.appendChild(img);
+}
+
+function initPeer() {
+  roomId = generateRoomId();
+  peer = new Peer(roomId, { debug: 0 });
+
+  peer.on('open', (id) => {
+    roomId = id;
+    remoteStatus.textContent = 'Room: ' + id;
+    const remoteUrl = `https://maciek11123.github.io/Tracker/magic-wall-remote.html#${id}`;
+    $('qr-room-id').textContent = id;
+    drawQR(remoteUrl);
+  });
+
+  peer.on('connection', (conn) => {
+    remoteConn = conn;
+    remoteBtn.textContent = '🟢 Remote Connected';
+    remoteBtn.classList.add('connected');
+    remoteStatus.textContent = 'Remote active';
+    qrOverlay.classList.remove('show');
+
+    conn.on('data', (msg) => {
+      handleRemoteCommand(msg);
+    });
+
+    conn.on('close', () => {
+      remoteConn = null;
+      remoteBtn.textContent = '📡 Connect Remote';
+      remoteBtn.classList.remove('connected');
+      remoteStatus.textContent = 'Disconnected';
+    });
+
+    // Start streaming canvas to remote via WebRTC
+    startVideoStream(conn);
+  });
+
+  peer.on('error', (e) => {
+    remoteStatus.textContent = 'Peer error';
+    console.warn('PeerJS error', e);
+  });
+}
+
+function startVideoStream(conn) {
+  // Capture the main output canvas (threeCanvas or gameCanvas or hud)
+  try {
+    // Create a composite canvas at reduced res for streaming
+    const streamCanvas = document.createElement('canvas');
+    streamCanvas.width = 640; streamCanvas.height = 360;
+    const sCtx = streamCanvas.getContext('2d');
+
+    videoStream = streamCanvas.captureStream(15); // 15fps stream
+
+    const call = peer.call(conn.peer, videoStream);
+
+    // Draw composite frame to stream canvas every ~66ms
+    setInterval(() => {
+      if (!remoteConn) return;
+      sCtx.clearRect(0, 0, 640, 360);
+      // Draw camera (for bluey mode) or black bg
+      if (currentCategory === 'bluey') {
+        const frame = rotatedFrame();
+        if (frame) {
+          sCtx.save();
+          if (mirrorX) { sCtx.translate(640, 0); sCtx.scale(-1, 1); }
+          sCtx.drawImage(frame, 0, 0, 640, 360);
+          sCtx.restore();
+        }
+      } else {
+        sCtx.fillStyle = '#050508';
+        sCtx.fillRect(0, 0, 640, 360);
+      }
+      // Overlay skeleton dots
+      if (currentCategory === 'bluey' && latestPoses.length > 0) {
+        const m = blueyMap();
+        const scaleX = 640 / W, scaleY = 360 / H;
+        sCtx.strokeStyle = '#50fa7b'; sCtx.fillStyle = '#50fa7b'; sCtx.lineWidth = 2;
+        for (const p of latestPoses) {
+          if (!p.keypoints) continue;
+          for (const [a, b] of BONES) {
+            const ka = p.keypoints[a], kb = p.keypoints[b];
+            if (ka && kb && ka.score > 0.2 && kb.score > 0.2) {
+              const ax = b2px(ka.x, ka.y, m), bx = b2px(kb.x, kb.y, m);
+              sCtx.beginPath();
+              sCtx.moveTo(ax.x * scaleX, ax.y * scaleY);
+              sCtx.lineTo(bx.x * scaleX, bx.y * scaleY);
+              sCtx.stroke();
+            }
+          }
+          for (const k of p.keypoints) {
+            if (k.score > 0.2) {
+              const px = b2px(k.x, k.y, m);
+              sCtx.beginPath();
+              sCtx.arc(px.x * scaleX, px.y * scaleY, 4, 0, 6.28);
+              sCtx.fill();
+            }
+          }
+        }
+      }
+      // Draw hand holo overlay (scale down)
+      sCtx.drawImage(hudCanvas, 0, 0, 640, 360);
+    }, 66);
+
+  } catch(e) { console.warn('Stream error', e); }
+}
+
+// Send state to remote periodically
+setInterval(() => {
+  if (!remoteConn) return;
+  try {
+    remoteConn.send({
+      type: 'state',
+      mode: currentMode,
+      category: currentCategory,
+      rotation: camRotation,
+      mirror: mirrorX,
+      quality: currentRes,
+      holo: holoEnabled,
+      games: GAME_LIST,
+      activeGame: activeGameUrl,
+      handCount: gesture.count,
+      peopleCount: people.length,
+      fps: Math.round(1000 / (performance.now() - lastFrameTime + 1)),
+    });
+  } catch(e) {}
+}, 500);
+
+function handleRemoteCommand(msg) {
+  if (!msg || !msg.type) return;
+  switch (msg.type) {
+    case 'set-rotation':   setRotation(msg.value); break;
+    case 'set-mirror':     setMirror(msg.value); break;
+    case 'set-quality':    setRes(msg.value); break;
+    case 'set-holo':       holoEnabled = msg.value; $('sw-holo').classList.toggle('on', holoEnabled); store.set('holo', holoEnabled); break;
+    case 'set-mode':       setMode(msg.mode, msg.category); break;
+    case 'go-home':        goHome(); break;
+    case 'launch-game':    launchGame(msg.url); break;
+    case 'close-game':     closeGame(); break;
+    case 'calibrate':      openCalibration(); break;
+    case 'set-skeleton':   showSkeleton = msg.value; $('btn-skel').classList.toggle('active', showSkeleton); break;
+    case 'set-autovisit':  autoVisit = msg.value; $('btn-autovisit').classList.toggle('active', autoVisit); break;
+  }
+}
+
+remoteBtn.onclick = () => {
+  if (!peer) initPeer();
+  qrOverlay.classList.add('show');
+};
+$('qr-close').onclick = () => qrOverlay.classList.remove('show');
+
+// ═══════════════════════════════════════════════════
+//  ADD GAME LAUNCHER TO BOTTOM DOCK
+// ═══════════════════════════════════════════════════
+(function buildLauncherDock() {
+  const dock = document.createElement('div');
+  dock.className = 'panel';
+  dock.id = 'dock-launcher';
+  dock.style.display = 'none';
+  GAME_LIST.filter(g => g.url).forEach(g => {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-game';
+    btn.textContent = g.label;
+    btn.onclick = () => launchGame(g.url);
+    dock.appendChild(btn);
+  });
+  $('ui').insertBefore(dock, $('ui').firstChild);
+})();
+
+// Show launcher dock as extra panel in all non-home modes
+const _origShowDocks = showDocks;
+function showDocks(cat) {
+  _origShowDocks(cat);
+  $('dock-launcher').style.display = cat !== 'home' ? 'flex' : 'none';
+}
 
 // BOOT
 renderer.setClearColor(new THREE.Color(0.02,0.02,0.03),1);
